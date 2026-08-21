@@ -35,8 +35,393 @@ import pygama.pargen.AoE_cal as AoE
 from pygama.math.distributions import gaussian
 from pygama.pargen.survival_fractions import compton_sf_sweep, get_sf_sweep
 
+from sklearn.covariance import MinCovDet
+from sklearn.linear_model import LinearRegression
+
 log = logging.getLogger(__name__)
 
+##################################
+#functions not copied over
+# load_and_filter_data
+# get_tcm_pulser_ids_1
+# get_tcm_pulser_ids_2
+# get_fit_range
+# initialize_detector_json
+# append_to_detector_json
+# plot_lq_over_e_2d_hist
+
+
+#okay I will add Harissree's code in here
+########
+from scipy.optimize import curve_fit
+from scipy.stats import norm, exponnorm
+
+def fd_bin_width(data):
+    """Freedman-Diaconis bin width: best for general use and skewed data."""
+    data = np.asarray(data)
+    q25, q75 = np.percentile(data, [25, 75])
+    iqr = q75 - q25
+    n = len(data)
+    if iqr == 0 or n == 0:
+        return None
+    return 2 * iqr / np.cbrt(n)
+
+def detect_tail_side(y_values, verbose=False):
+    """
+    Automatically detect whether the distribution has a stronger left or right tail.
+
+    Uses robust quantile distances around the median:
+        left_tail  = q50 - q10
+        right_tail = q90 - q50
+
+    Returns
+    -------
+    tail_side : {"left", "right"}
+    """
+
+    y_values = np.asarray(y_values, dtype=float)
+    y_values = y_values[np.isfinite(y_values)]
+
+    if len(y_values) < 10:
+        return "right"
+
+    q10, q50, q90 = np.percentile(y_values, [10, 50, 90])
+
+    left_tail = q50 - q10
+    right_tail = q90 - q50
+
+    if verbose:
+        print(f"q10={q10:.5g}, q50={q50:.5g}, q90={q90:.5g}")
+        print(f"left_tail={left_tail:.5g}, right_tail={right_tail:.5g}")
+
+    if right_tail >= left_tail:
+        return "right"
+    else:
+        return "left"
+
+def fit_gaussian_tail_to_histogram(
+    y_values,
+    tail_side="auto",
+    return_full=False,
+    verbose=False
+):
+    """
+    Fit histogram with Gaussian + smooth one-sided EMG tail.
+
+    Model:
+        Gaussian core + smooth right/left exponentially modified Gaussian tail.
+
+    Parameters
+    ----------
+    y_values : array-like
+        Values to histogram and fit.
+
+    tail_side : {"auto", "right", "left"}, optional
+        Which side gets the smooth EMG tail.
+        If "auto", the function detects the stronger tail automatically.
+
+    return_full : bool
+        If False, returns mu, sigma, mu_err, sigma_err.
+        If True, also returns popt, perr, model, bin_centers, hist.
+
+    verbose : bool
+        If True, prints automatic tail-side diagnostics.
+
+    Returns
+    -------
+    mu_fit, sigma_fit, mu_err, sigma_err
+        Core Gaussian mean/sigma and errors.
+    """
+
+    y_values = np.asarray(y_values, dtype=float)
+    y_values = y_values[np.isfinite(y_values)]
+
+    if len(y_values) < 10:
+        if return_full:
+            return np.nan, np.nan, np.nan, np.nan, None, None, None, None, None
+        return np.nan, np.nan, np.nan, np.nan
+
+    # -------------------------------
+    # Automatically detect tail side
+    # -------------------------------
+    if tail_side == "auto":
+        tail_side = detect_tail_side(y_values, verbose=verbose)
+
+        if verbose:
+            print(f"Automatically selected tail_side = {tail_side}")
+
+    if tail_side not in ["right", "left"]:
+        raise ValueError("tail_side must be 'auto', 'right', or 'left'.")
+
+    # -------------------------------
+    # Estimate binning
+    # -------------------------------
+    bin_width = fd_bin_width(y_values)
+
+    if bin_width is None or bin_width <= 0:
+        bins = 30
+    else:
+        bins = max(
+            10,
+            int(np.ceil((np.max(y_values) - np.min(y_values)) / bin_width))
+        )
+
+    hist, bin_edges = np.histogram(y_values, bins=bins, density=False)
+    bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
+
+    bin_width_eff = np.median(np.diff(bin_edges))
+
+    # -------------------------------
+    # Model: Gaussian + smooth EMG tail
+    # -------------------------------
+    def model_right(x, A_g, mu, sigma, A_t, tau):
+        sigma = np.maximum(sigma, 1e-12)
+        tau = np.maximum(tau, 1e-12)
+
+        gaussian = A_g * norm.pdf(x, mu, sigma)
+
+        K = tau / sigma
+        tail = A_t * exponnorm.pdf(x, K, loc=mu, scale=sigma)
+
+        return bin_width_eff * (gaussian + tail)
+
+    def model_left(x, A_g, mu, sigma, A_t, tau):
+        sigma = np.maximum(sigma, 1e-12)
+        tau = np.maximum(tau, 1e-12)
+
+        gaussian = A_g * norm.pdf(x, mu, sigma)
+
+        K = tau / sigma
+        tail = A_t * exponnorm.pdf(-x, K, loc=-mu, scale=sigma)
+
+        return bin_width_eff * (gaussian + tail)
+
+    if tail_side == "right":
+        model = model_right
+    else:
+        model = model_left
+
+    # -------------------------------
+    # Initial guesses
+    # -------------------------------
+    mu0 = np.median(y_values)
+    sigma0 = np.std(y_values)
+
+    if not np.isfinite(sigma0) or sigma0 <= 0:
+        sigma0 = 1.0
+
+    # Since the model returns expected bin counts,
+    # A_g and A_t are approximately event-count amplitudes.
+    # As a starting point, assume about 80% of the events belong to the Gaussian core and 20% belong to the tail
+    
+    A_total0 = len(y_values)
+    A_g0 = 0.8 * A_total0
+    A_t0 = 0.2 * A_total0
+    tau0 = sigma0
+
+    p0 = [A_g0, mu0, sigma0, A_t0, tau0]
+
+    # Bounds keep sigma/tau positive
+    bounds = (
+        [0, np.min(y_values), 1e-12, 0, 1e-12],
+        [np.inf, np.max(y_values), np.inf, np.inf, np.inf]
+    )
+
+    try:
+        popt, pcov = curve_fit(
+            model,
+            bin_centers,
+            hist,
+            p0=p0,
+            bounds=bounds,
+            maxfev=50000
+        )
+
+        perr = np.sqrt(np.diag(pcov))
+
+        A_g_fit, mu_fit, sigma_fit, A_t_fit, tau_fit = popt
+        A_g_err, mu_err, sigma_err, A_t_err, tau_err = perr
+
+        if verbose:
+            print(f"Fit tail_side = {tail_side}")
+            print(f"mu    = {mu_fit:.6g} ± {mu_err:.3g}")
+            print(f"sigma = {sigma_fit:.6g} ± {sigma_err:.3g}")
+            print(f"A_g   = {A_g_fit:.6g} ± {A_g_err:.3g}")
+            print(f"A_t   = {A_t_fit:.6g} ± {A_t_err:.3g}")
+            print(f"tau   = {tau_fit:.6g} ± {tau_err:.3g}")
+
+        if return_full:
+            return (
+                mu_fit,
+                sigma_fit,
+                mu_err,
+                sigma_err,
+                popt,
+                perr,
+                model,
+                bin_centers,
+                hist
+            )
+
+        return mu_fit, sigma_fit, mu_err, sigma_err
+
+    except Exception as e:
+        print(f"Gaussian + smooth {tail_side} EMG tail fit failed: {e}")
+
+        if return_full:
+            return np.nan, np.nan, np.nan, np.nan, None, None, model, bin_centers, hist
+
+        return np.nan, np.nan, np.nan, np.nan
+
+def extract_gaussian_trends(
+    lq_over_e,
+    energy,
+    energy_windows,
+#    lq_filter,
+#    det,
+    tail_side="auto",
+    max_cols=3
+):
+    means, mean_errors, sigmas, sigma_errs, bin_centers = [], [], [], [], []
+
+    hist_panels = []
+
+    for i in range(len(energy_windows) - 1):
+        lo, hi = energy_windows[i], energy_windows[i + 1]
+
+        idx = (energy > lo) & (energy < hi)
+        values = np.asarray(lq_over_e[idx], dtype=float)
+        values = values[np.isfinite(values)]
+
+        if len(values) > 10:
+            fit_min, fit_max = get_fit_range(values)
+            filtered_values = values[(values >= fit_min) & (values <= fit_max)]
+
+            if len(filtered_values) <= 10:
+                continue
+
+            result = fit_gaussian_tail_to_histogram(
+                filtered_values,
+                tail_side=tail_side,
+                return_full=True
+            )
+
+            mean, sigma, mean_err, sigma_err, popt, perr, model, fit_bin_centers, fit_hist = result
+
+            if np.isfinite(mean) and np.isfinite(sigma):
+                means.append(mean)
+                mean_errors.append(mean_err)
+                sigmas.append(sigma)
+                sigma_errs.append(sigma_err)
+                bin_centers.append(0.5 * (lo + hi))
+
+                hist_panels.append({
+                    "lo": lo,
+                    "hi": hi,
+                    "values": filtered_values,
+                    "popt": popt,
+                    "model": model,
+                    "mean": mean,
+                    "sigma": sigma,
+                    "mean_err": mean_err,
+                    "sigma_err": sigma_err,
+                })
+
+    return (
+        np.array(bin_centers),
+        np.array(means),
+        np.array(mean_errors),
+        np.array(sigmas),
+        np.array(sigma_errs)
+    )
+
+
+def fit_mean_model(bin_centers, means, mean_errs):
+    # Linear model: mean(E) = mE + b
+    def model(E, m, b):
+        return m * E + b
+
+    # Clean input data
+    mask = ~np.isnan(bin_centers) & ~np.isnan(means) & ~np.isnan(mean_errs)
+    x = np.asarray(bin_centers[mask], dtype=float)
+    y = np.asarray(means[mask], dtype=float)
+    s = np.asarray(mean_errs[mask], dtype=float)
+
+    # Avoid zero / negative uncertainties
+    s = np.where(s <= 0, 1e-8, s)
+
+    # Initial guess: slope and intercept
+    p0 = [0.0, np.nanmean(y)]
+
+    try:
+        popt, pcov = curve_fit(
+            model,
+            x,
+            y,
+            p0=p0,
+            sigma=s,
+            absolute_sigma=True,
+            maxfev=10000
+        )
+        return popt, np.sqrt(np.diag(pcov)), model
+
+    except Exception as e:
+        print(f"Mean linear fit failed: {e}")
+        return [np.nan, np.nan], [np.nan, np.nan], model
+
+
+def fit_sigma_model(bin_centers, sigmas, sigma_errs):
+    # 1. Fixed model: Ensure all inputs are float64 and handle potential negative inside sqrt
+    def model(E, A, B): 
+        # abs() protects against negative values during iterations
+        return np.sqrt(np.abs(A / (E**2) + B)) 
+
+    # 2. Initial guess (p0) is crucial for nonlinear models
+    # Estimate p0 based on data properties 
+    initial_guess = [1e-3, np.nanmean(sigmas)**2]
+    
+    # 3. Clean input data: Remove NaN/Inf
+    mask = ~np.isnan(bin_centers) & ~np.isnan(sigmas) & ~np.isnan(sigma_errs)
+    x = bin_centers[mask]
+    y = sigmas[mask]
+    s = sigma_errs[mask]
+    
+    # 4. Handle zeros in error to avoid division by zero
+    s = np.where(s == 0, 1e-8, s)
+    s = s + 1e-8 # Ensure strict positivity
+    
+    try:
+        # Use 'trf' method for better handling of parameter bounds if needed
+        popt, pcov = curve_fit(
+            model, x, y, 
+            p0=initial_guess, 
+            sigma=s, 
+            maxfev=10000,
+            absolute_sigma=True # Optional: use if errors are absolute standard devs
+        )
+        return popt, np.sqrt(np.diag(pcov)), model
+    except Exception as e:
+        print(f"Sigma model fit failed: {e}")
+        return [np.nan, np.nan], [np.nan, np.nan], model
+
+def as_numpy(a):
+    """Convert pandas Series, awkward-like, or array-like input to numpy."""
+    if hasattr(a, "to_numpy")
+        return a.to_numpy()
+        return np.asarray(a)
+        
+def finite_pair(x, y):
+    """Return finite x/y pairs as numpy arrays."""
+    x = as_numpy(x).astype(float)
+    y = as_numpy(y).astype(float)
+    #x = x.to_numpy().astype(float)
+    #y = y.to_numpy().astype(float)
+
+    mask = np.isfinite(x) & np.isfinite(y)
+    return x[mask], y[mask]
+
+
+##################################
 
 def get_fit_range(lq: np.array) -> tuple(float, float):
     """
@@ -378,8 +763,80 @@ class LQCal:
                     self.cal_dicts[tstamp].update(update_dict)
         else:
             self.cal_dicts.update(update_dict)
+######################
+    def energy_width_correction(
+        self,
+        df: pd.DataFrame(),
+        lq_param,
+        cal_energy_param: str, 
+        display: int = 0,  
+    ):
+        """
+        I will add information about the code here
+        """
+        log.info("Starting LQ energy width correction")
+        
+        try:
+            # 
+            bin_centers, means, mean_errs, sigmas, sigma_errs = extract_gaussian_trends(df[lq_param].to_numpy(),
+                                                                                        df[cal_energy_param].to_numpy(),
+                                                                                        np.linspace(250, 2650, 25)
+                                                                                       )#energy_windows, 
+                                                                                        #lq_filter)
+                                                                                        
+            #fit a linear model to mu vs E
+            #popt_mean, perr_mean, mean_model = fit_mean_model(bin_centers, means, mean_errs)
+            #Fit sqrt(A/E^2+B) analytical model to sigma vs E
+            popt_sigma, perr_sigma, sigma_model = fit_sigma_model(bin_centers, sigmas, sigma_errs)
 
-    def lq_timecorr(self, df, lq_param, output_name="LQ_Timecorr", display=0):  # noqa: ARG002
+            #seperate out the parameters
+            A_fit_sigma, B_fit_sigma = popt_sigma
+            mean_of_means= float(np.mean(means))
+
+            self.A_fit_sigma = A_fit_sigma
+            self.B_fit_sigma = B_fit_sigma
+            self.mean_of_means = mean_of_means
+            
+            
+        except Exception as e:
+            if self.debug_mode:
+                raise
+            log.error("LQ energy width correction failed: %s", e)
+            self.dt_fit_pars = (np.nan, np.nan)
+
+
+        #for testing just print them nevermind okay just reinspectt
+        #print({"LQ_E_width_Corrected": {"expression": f"({lq_param}-mean_of_means)/(np.sqrt((a**2/{cal_energy_param}**2)+b**2))",
+        #           "parameters": {"a": self.A_fit_sigma, "b": self.B_fit_sigma, "mean_of_means": self.mean_of_means},
+        #       }
+        #   })
+        
+        #update the dataframe... 
+        
+        width_sigma = np.sqrt((A_fit_sigma**2 / df[cal_energy_param]**2) + B_fit_sigma**2)
+        df['LQ_E_Width_Corrected'] = (df[lq_param] - mean_of_means) / width_sigma
+
+        
+       
+        
+        
+        #save the fit parameters
+        self.update_cal_dicts(
+            {"LQ_E_width_Corrected": {"expression": f"({lq_param}-mean_of_means)/(np.sqrt((a**2/{cal_energy_param}**2)+b**2))",
+                    "parameters": {"a": self.A_fit_sigma, "b": self.B_fit_sigma, "mean_of_means": self.mean_of_means},
+                }
+            }
+        )
+
+        
+
+######################
+
+    def lq_timecorr(self, 
+                    df, 
+                    lq_param, 
+                    output_name="LQ_Timecorr", 
+                    display=0):  # noqa: ARG002
         """
         Normalise LQ by the time-varying DEP mean.
 
@@ -406,6 +863,8 @@ class LQCal:
 
         log.info("Starting LQ time correction")
         self.timecorr_df = pd.DataFrame()
+        output_name = "LQ_Timecorr"
+        
         try:
             if "run_timestamp" in df:
                 for tstamp, time_df in df.groupby("run_timestamp", sort=True):
@@ -563,11 +1022,14 @@ class LQCal:
                 }
             )
 
+
+    
     def drift_time_correction(
         self,
         df: pd.DataFrame(),
         lq_param,
         cal_energy_param: str,  # noqa: ARG002
+        mode: str = "linear", #options are linear and "LR-MCD"
         display: int = 0,  # noqa: ARG002
     ):
         """
@@ -587,61 +1049,137 @@ class LQCal:
             Name of the LQ parameter column to correct.
         cal_energy_param
             Name of the calibrated energy column.
+        mode
+            Which type of correction is being done. options are linear and LR-MCD
         display
             Verbosity level (currently unused).
         """
 
         log.info("Starting LQ drift time correction")
-        try:
-            pars = binned_lq_fit(df, lq_param, self.cal_energy_param, peak=1592.5)[0]
-            mean = pars[0]
-            sigma = pars[1]
-
-            dep_events = df.query(
-                f"{self.cal_energy_param} > 1589.5 & {self.cal_energy_param} < 1595.5 & {self.cal_energy_param}=={self.cal_energy_param}&{lq_param}=={lq_param}"
-            )
-
-            dt_range = [
-                np.nanpercentile(dep_events[self.dt_param], 10),
-                np.nanpercentile(dep_events[self.dt_param], 95),
-            ]
-
-            lq_range = [mean - 2 * sigma, mean + 2 * sigma]
-
-            self.lq_range = lq_range
-            self.dt_range = dt_range
-
-            final_df = dep_events.query(
-                f"{lq_param} > {lq_range[0]} & {lq_param} < {lq_range[1]} & {self.dt_param} > {dt_range[0]} & {self.dt_param} < {dt_range[1]}"
-            )
-
-            result = linregress(
-                final_df[self.dt_param],
-                final_df[lq_param],
-                alternative="greater",
-            )
-            self.dt_fit_pars = result
-
-            df["LQ_Corrected"] = (
-                df[lq_param]
-                - df[self.dt_param] * self.dt_fit_pars[0]
-                - self.dt_fit_pars[1]
-            )
-
-        except Exception as e:
-            if self.debug_mode:
-                raise
-            log.error("LQ drift time correction failed: %s", e)
-            self.dt_fit_pars = (np.nan, np.nan)
-
-        self.update_cal_dicts(
-            {
-                "LQ_Corrected": {
-                    "expression": f"{lq_param} - dt_eff*a - b",
-                    "parameters": {"a": self.dt_fit_pars[0], "b": self.dt_fit_pars[1]},
+        if mode == "linear":
+            try:
+                pars = binned_lq_fit(df, lq_param, self.cal_energy_param, peak=1592.5)[0]
+                mean = pars[0]
+                sigma = pars[1]
+    
+                dep_events = df.query(
+                    f"{self.cal_energy_param} > 1589.5 & {self.cal_energy_param} < 1595.5 & {self.cal_energy_param}=={self.cal_energy_param}&{lq_param}=={lq_param}"
+                )
+    
+                dt_range = [
+                    np.nanpercentile(dep_events[self.dt_param], 10),
+                    np.nanpercentile(dep_events[self.dt_param], 95),
+                ]
+    
+                lq_range = [mean - 2 * sigma, mean + 2 * sigma]
+    
+                self.lq_range = lq_range
+                self.dt_range = dt_range
+    
+                final_df = dep_events.query(
+                    f"{lq_param} > {lq_range[0]} & {lq_param} < {lq_range[1]} & {self.dt_param} > {dt_range[0]} & {self.dt_param} < {dt_range[1]}"
+                )
+    
+                result = linregress(
+                    final_df[self.dt_param],
+                    final_df[lq_param],
+                    alternative="greater",
+                )
+                self.dt_fit_pars = result
+    
+                df["LQ_Corrected"] = (
+                    df[lq_param]
+                    - df[self.dt_param] * self.dt_fit_pars[0]
+                    - self.dt_fit_pars[1]
+                )
+    
+            except Exception as e:
+                if self.debug_mode:
+                    raise
+                log.error("LQ drift time correction failed: %s", e)
+                self.dt_fit_pars = (np.nan, np.nan)
+    
+            self.update_cal_dicts(
+                {
+                    "LQ_Corrected": {
+                        "expression": f"{lq_param} - dt_eff*a - b",
+                        "parameters": {"a": self.dt_fit_pars[0], "b": self.dt_fit_pars[1]},
+                    }
                 }
-            }
-        )
+            )
+        #adding in the linear -mcdrift mode here    
+##########################################        
+        elif mode == "LR-MCD":
+            try:
+                energyCut = 1000
+                dep_max = 1610
+                dep_min = 1575
+
+
+                energy_cut_events = df.query(f"{self.cal_energy_param} > {energyCut} & {self.cal_energy_param}=={self.cal_energy_param} &{lq_param}=={lq_param}")
+                
+                dep_events = df.query(f"{self.cal_energy_param} > {dep_min} & {self.cal_energy_param} < {dep_max} & {self.cal_energy_param}=={self.cal_energy_param} &{lq_param}=={lq_param}")
+                
+                #dt_dep = dep_events[self.dt_param]
+                #lq_dep = dep_events[f"{lq_param}"]
+
+#                #lq_dep = as_numpy(lq_dep).astype(float)
+#                #dt_dep = as_numpy(dt_dep).astype(float)
+
+                #lq_dep = lq_dep.to_numpy().astype(float)
+                #dt_dep = dt_dep.to_numpy().astype(float)
+
+              #  print(dep_events)
+              #  print(type(dep_events))
+                
+                #dt_dep, lq_dep = finite_pair(dt_dep, lq_dep)
+                
+                #data_dep = np.column_stack((dt_dep, lq_dep))  
+                data_dep = dep_events[["dt_eff", f"{lq_param}"]]
+            
+                #x_vals = np.linspace(dt_dep.min(), dt_dep.max(), 500)
+                x_vals = np.linspace(dep_events["dt_eff"].min(), dep_events["dt_eff"].min(), 500)
+
+                mcd = MinCovDet().fit(data_dep.to_numpy())
+                inliers = data_dep[mcd.support_]
+
+                # ------------------------------------------------------------------
+                # LR-MCD
+                # ------------------------------------------------------------------
+                inlier_dt = inliers[:, 0]
+                inlier_lq = inliers[:, 1]
+
+                #inlier_dt = inliers[:, 0].to_numpy()
+                #inlier_lq = inliers[:, 1].to_numpy()
+            
+                lr_mcd = LinearRegression().fit(inlier_dt.reshape(-1, 1), inlier_lq)
+            
+                slope_lr_mcd = lr_mcd.coef_[0]
+                intercept_lr_mcd = lr_mcd.intercept_
+                r2_lr_mcd = lr_mcd.score(inlier_dt.reshape(-1, 1), inlier_lq)
+            
+                y_lr_mcd = slope_lr_mcd * x_vals + intercept_lr_mcd
+
+
+                #get the mean of the lq over E dt corrected values
+                lq_dt_cor_mean = np.mean(lq_over_e_E_DT_Corr)
+            except Exception as e:
+                if self.debug_mode:
+                    raise
+                log.error("LQ drift time correction failed: %s", e)
+                self.dt_fit_pars = (np.nan, np.nan)
+    
+            self.update_cal_dicts(
+                {
+                    "LQ_Corrected": {
+                        "expression":  f"{lq_param} - (slope_lr_mcd * dt_eff + intercept_lr_mcd) - lq_dt_cor_mean",
+                        "parameters": {"slope_lr_mcd": slope_lr_mcd, "intercept_lr_mcd": intercept_lr_mcd, "r2":r2_lr_mcd},
+                    }
+                }
+            )        
+##################################        
+
+
 
     def get_cut_lq_dep(self, df: pd.DataFrame(), lq_param: str, cal_energy_param: str):
         """
@@ -726,7 +1264,10 @@ class LQCal:
             Name of the raw LQ parameter column in *df*.
         """
 
-        self.lq_timecorr(df, initial_lq_param)
+        #self.energy_width_correction(df, initial_lq_param, cal_energy_param=self.cal_energy_param)
+        #log.info("Finished LQ E width Correction")
+
+        self.lq_timecorr(df, lq_param = initial_lq_param)#"LQ_E_Width_Corrected")
         log.info("Finished LQ Time Correction")
 
         self.drift_time_correction(
@@ -734,8 +1275,11 @@ class LQCal:
         )
         log.info("Finished LQ Drift Time Correction")
 
+        self.energy_width_correction(df, lq_param="LQ_Timecorr", cal_energy_param=self.cal_energy_param)
+        log.info("Finished LQ E width Correction")
+
         self.get_cut_lq_dep(
-            df, lq_param="LQ_Corrected", cal_energy_param=self.cal_energy_param
+            df, lq_param="LQ_E_Width_Corrected", cal_energy_param=self.cal_energy_param
         )
         log.info("Finished Calculating the LQ Cut Value")
 
