@@ -3,7 +3,6 @@ Calibration routines for the Late Charge (LQ) parameter in HPGe detectors.
 
 LQ is computed from the ratio of the late-charge integral to the total charge
 and is sensitive to multi-site events.  This module provides functions to
-
 * determine the fit range and histogram the LQ distribution,
 * fit the distribution with a Gaussian model,
 * perform a drift-time correction for the time-dependent LQ shift,
@@ -284,7 +283,7 @@ def extract_gaussian_trends(
 ):
     means, mean_errors, sigmas, sigma_errs, bin_centers = [], [], [], [], []
 
-    hist_panels = []
+    #hist_panels = []
 
     for i in range(len(energy_windows) - 1):
         lo, hi = energy_windows[i], energy_windows[i + 1]
@@ -314,7 +313,7 @@ def extract_gaussian_trends(
                 sigmas.append(sigma)
                 sigma_errs.append(sigma_err)
                 bin_centers.append(0.5 * (lo + hi))
-
+                """
                 hist_panels.append({
                     "lo": lo,
                     "hi": hi,
@@ -326,6 +325,7 @@ def extract_gaussian_trends(
                     "mean_err": mean_err,
                     "sigma_err": sigma_err,
                 })
+                """
 
     return (
         np.array(bin_centers),
@@ -406,7 +406,7 @@ def fit_sigma_model(bin_centers, sigmas, sigma_errs):
 
 def as_numpy(a):
     """Convert pandas Series, awkward-like, or array-like input to numpy."""
-    if hasattr(a, "to_numpy")
+    if hasattr(a, "to_numpy"):
         return a.to_numpy()
         return np.asarray(a)
         
@@ -772,7 +772,7 @@ class LQCal:
         display: int = 0,  
     ):
         """
-        I will add information about the code here
+        performs an energy width correction to the LQ/E distribution. Fits across the energy range 250keV to 2650keV in 25keV
         """
         log.info("Starting LQ energy width correction")
         
@@ -1023,13 +1023,11 @@ class LQCal:
             )
 
 
-    
     def drift_time_correction(
         self,
         df: pd.DataFrame(),
         lq_param,
         cal_energy_param: str,  # noqa: ARG002
-        mode: str = "linear", #options are linear and "LR-MCD"
         display: int = 0,  # noqa: ARG002
     ):
         """
@@ -1049,134 +1047,63 @@ class LQCal:
             Name of the LQ parameter column to correct.
         cal_energy_param
             Name of the calibrated energy column.
-        mode
-            Which type of correction is being done. options are linear and LR-MCD
         display
             Verbosity level (currently unused).
         """
 
         log.info("Starting LQ drift time correction")
-        if mode == "linear":
-            try:
-                pars = binned_lq_fit(df, lq_param, self.cal_energy_param, peak=1592.5)[0]
-                mean = pars[0]
-                sigma = pars[1]
-    
-                dep_events = df.query(
-                    f"{self.cal_energy_param} > 1589.5 & {self.cal_energy_param} < 1595.5 & {self.cal_energy_param}=={self.cal_energy_param}&{lq_param}=={lq_param}"
-                )
-    
-                dt_range = [
-                    np.nanpercentile(dep_events[self.dt_param], 10),
-                    np.nanpercentile(dep_events[self.dt_param], 95),
-                ]
-    
-                lq_range = [mean - 2 * sigma, mean + 2 * sigma]
-    
-                self.lq_range = lq_range
-                self.dt_range = dt_range
-    
-                final_df = dep_events.query(
-                    f"{lq_param} > {lq_range[0]} & {lq_param} < {lq_range[1]} & {self.dt_param} > {dt_range[0]} & {self.dt_param} < {dt_range[1]}"
-                )
-    
-                result = linregress(
-                    final_df[self.dt_param],
-                    final_df[lq_param],
-                    alternative="greater",
-                )
-                self.dt_fit_pars = result
-    
-                df["LQ_Corrected"] = (
-                    df[lq_param]
-                    - df[self.dt_param] * self.dt_fit_pars[0]
-                    - self.dt_fit_pars[1]
-                )
-    
-            except Exception as e:
-                if self.debug_mode:
-                    raise
-                log.error("LQ drift time correction failed: %s", e)
-                self.dt_fit_pars = (np.nan, np.nan)
-    
-            self.update_cal_dicts(
-                {
-                    "LQ_Corrected": {
-                        "expression": f"{lq_param} - dt_eff*a - b",
-                        "parameters": {"a": self.dt_fit_pars[0], "b": self.dt_fit_pars[1]},
-                    }
-                }
+        try:
+            pars = binned_lq_fit(df, lq_param, self.cal_energy_param, peak=1592.5)[0]
+            mean = pars[0]
+            sigma = pars[1]
+
+            dep_events = df.query(
+                f"{self.cal_energy_param} > 1589.5 & {self.cal_energy_param} < 1595.5 & {self.cal_energy_param}=={self.cal_energy_param}&{lq_param}=={lq_param}"
             )
-        #adding in the linear -mcdrift mode here    
-##########################################        
-        elif mode == "LR-MCD":
-            try:
-                energyCut = 1000
-                dep_max = 1610
-                dep_min = 1575
 
+            dt_range = [
+                np.nanpercentile(dep_events[self.dt_param], 10),
+                np.nanpercentile(dep_events[self.dt_param], 95),
+            ]
 
-                energy_cut_events = df.query(f"{self.cal_energy_param} > {energyCut} & {self.cal_energy_param}=={self.cal_energy_param} &{lq_param}=={lq_param}")
-                
-                dep_events = df.query(f"{self.cal_energy_param} > {dep_min} & {self.cal_energy_param} < {dep_max} & {self.cal_energy_param}=={self.cal_energy_param} &{lq_param}=={lq_param}")
-                
-                #dt_dep = dep_events[self.dt_param]
-                #lq_dep = dep_events[f"{lq_param}"]
+            lq_range = [mean - 2 * sigma, mean + 2 * sigma]
 
-#                #lq_dep = as_numpy(lq_dep).astype(float)
-#                #dt_dep = as_numpy(dt_dep).astype(float)
+            self.lq_range = lq_range
+            self.dt_range = dt_range
 
-                #lq_dep = lq_dep.to_numpy().astype(float)
-                #dt_dep = dt_dep.to_numpy().astype(float)
+            final_df = dep_events.query(
+                f"{lq_param} > {lq_range[0]} & {lq_param} < {lq_range[1]} & {self.dt_param} > {dt_range[0]} & {self.dt_param} < {dt_range[1]}"
+            )
 
-              #  print(dep_events)
-              #  print(type(dep_events))
-                
-                #dt_dep, lq_dep = finite_pair(dt_dep, lq_dep)
-                
-                #data_dep = np.column_stack((dt_dep, lq_dep))  
-                data_dep = dep_events[["dt_eff", f"{lq_param}"]]
-            
-                #x_vals = np.linspace(dt_dep.min(), dt_dep.max(), 500)
-                x_vals = np.linspace(dep_events["dt_eff"].min(), dep_events["dt_eff"].min(), 500)
+            result = linregress(
+                final_df[self.dt_param],
+                final_df[lq_param],
+                alternative="greater",
+            )
+            self.dt_fit_pars = result
 
-                mcd = MinCovDet().fit(data_dep.to_numpy())
-                inliers = data_dep[mcd.support_]
+            df["LQ_Corrected"] = (
+                df[lq_param]
+                - df[self.dt_param] * self.dt_fit_pars[0]
+                - self.dt_fit_pars[1]
+            )
 
-                # ------------------------------------------------------------------
-                # LR-MCD
-                # ------------------------------------------------------------------
-                inlier_dt = inliers[:, 0]
-                inlier_lq = inliers[:, 1]
+        except Exception as e:
+            if self.debug_mode:
+                raise
+            log.error("LQ drift time correction failed: %s", e)
+            self.dt_fit_pars = (np.nan, np.nan)
 
-                #inlier_dt = inliers[:, 0].to_numpy()
-                #inlier_lq = inliers[:, 1].to_numpy()
-            
-                lr_mcd = LinearRegression().fit(inlier_dt.reshape(-1, 1), inlier_lq)
-            
-                slope_lr_mcd = lr_mcd.coef_[0]
-                intercept_lr_mcd = lr_mcd.intercept_
-                r2_lr_mcd = lr_mcd.score(inlier_dt.reshape(-1, 1), inlier_lq)
-            
-                y_lr_mcd = slope_lr_mcd * x_vals + intercept_lr_mcd
-
-
-                #get the mean of the lq over E dt corrected values
-                lq_dt_cor_mean = np.mean(lq_over_e_E_DT_Corr)
-            except Exception as e:
-                if self.debug_mode:
-                    raise
-                log.error("LQ drift time correction failed: %s", e)
-                self.dt_fit_pars = (np.nan, np.nan)
-    
-            self.update_cal_dicts(
-                {
-                    "LQ_Corrected": {
-                        "expression":  f"{lq_param} - (slope_lr_mcd * dt_eff + intercept_lr_mcd) - lq_dt_cor_mean",
-                        "parameters": {"slope_lr_mcd": slope_lr_mcd, "intercept_lr_mcd": intercept_lr_mcd, "r2":r2_lr_mcd},
-                    }
+        self.update_cal_dicts(
+            {
+                "LQ_Corrected": {
+                    "expression": f"{lq_param} - dt_eff*a - b",
+                    "parameters": {"a": self.dt_fit_pars[0], "b": self.dt_fit_pars[1]},
                 }
-            )        
+            }
+        )
+    
+      
 ##################################        
 
 
@@ -1263,9 +1190,6 @@ class LQCal:
         initial_lq_param
             Name of the raw LQ parameter column in *df*.
         """
-
-        #self.energy_width_correction(df, initial_lq_param, cal_energy_param=self.cal_energy_param)
-        #log.info("Finished LQ E width Correction")
 
         self.lq_timecorr(df, lq_param = initial_lq_param)#"LQ_E_Width_Corrected")
         log.info("Finished LQ Time Correction")
