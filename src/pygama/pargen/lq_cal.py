@@ -821,7 +821,8 @@ class LQCal:
         #update the dataframe... 
         
         width_sigma = np.sqrt((A_fit_sigma**2 / df[cal_energy_param]**2) + B_fit_sigma**2)
-        df['LQ_E_Width_Corrected'] = (df[lq_param] - mean_of_means) / width_sigma
+        #df['LQ_E_Width_Corrected'] = (df[lq_param] - mean_of_means) / width_sigma
+        df['LQ_Energy_Corrected'] = (df[lq_param] - mean_of_means) / width_sigma
 
         
        
@@ -1252,6 +1253,7 @@ class LQCal:
 
         timecorr_name = _n("LQ_Timecorr")
         corrected_name = _n("LQ_Corrected")
+        energy_corrected_name = _n("LQ_Energy_Corrected")
         classifier_name = _n("LQ_Classifier")
         cut_name = _n("LQ_Cut")
 
@@ -1267,7 +1269,9 @@ class LQCal:
         )
         log.info("Finished LQ Drift Time Correction")
 
-        self.energy_width_correction(df, lq_param="LQ_Timecorr", cal_energy_param=self.cal_energy_param)
+        #self.energy_width_correction(df, lq_param="LQ_Timecorr", cal_energy_param=self.cal_energy_param)
+        self.energy_width_correction(df, lq_param=corrected_name, cal_energy_param=self.cal_energy_param)
+        
         log.info("Finished LQ E width Correction")
 
         self.get_cut_lq_dep(
