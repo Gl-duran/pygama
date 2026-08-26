@@ -283,7 +283,7 @@ def extract_gaussian_trends(
 ):
     means, mean_errors, sigmas, sigma_errs, bin_centers = [], [], [], [], []
 
-    #hist_panels = []
+    hist_panels = []
 
     for i in range(len(energy_windows) - 1):
         lo, hi = energy_windows[i], energy_windows[i + 1]
@@ -313,7 +313,7 @@ def extract_gaussian_trends(
                 sigmas.append(sigma)
                 sigma_errs.append(sigma_err)
                 bin_centers.append(0.5 * (lo + hi))
-                """
+                
                 hist_panels.append({
                     "lo": lo,
                     "hi": hi,
@@ -325,14 +325,15 @@ def extract_gaussian_trends(
                     "mean_err": mean_err,
                     "sigma_err": sigma_err,
                 })
-                """
+                
 
     return (
         np.array(bin_centers),
         np.array(means),
         np.array(mean_errors),
         np.array(sigmas),
-        np.array(sigma_errs)
+        np.array(sigma_errs),
+        hist_panels
     )
 
 
@@ -420,7 +421,134 @@ def finite_pair(x, y):
     mask = np.isfinite(x) & np.isfinite(y)
     return x[mask], y[mask]
 
+def centers_to_edges(x):
+    x = np.asarray(x, dtype=float)
 
+    if len(x) < 2:
+        dx = 1.0
+        return np.array([x[0] - dx / 2, x[0] + dx / 2])
+
+    dx = np.diff(x)
+
+    edges = np.empty(len(x) + 1)
+    edges[1:-1] = 0.5 * (x[:-1] + x[1:])
+    edges[0] = x[0] - dx[0] / 2
+    edges[-1] = x[-1] + dx[-1] / 2
+
+    return edges
+    
+def plot_mean_vs_energy(
+    bin_centers,
+    means,
+    mean_errs,
+    model,
+    popt,
+    perr,
+    lq_filter,
+    det=None,
+    part=None,
+    period=None
+):
+    plt.figure(figsize=(6, 5))
+
+    if part is not None:
+        var = part
+        var_name = "Partition"
+    else:
+        var = period
+        var_name = "Period"
+
+    # -----------------------------
+    # Clean data
+    # -----------------------------
+    mask = np.isfinite(bin_centers) & np.isfinite(means) & np.isfinite(mean_errs)
+    x = np.asarray(bin_centers[mask], dtype=float)
+    y = np.asarray(means[mask], dtype=float)
+    yerr = np.asarray(mean_errs[mask], dtype=float)
+
+    print("len(x)",len(x),"len(y)",len(y))
+
+    if len(x) == 0:
+        #print(f"No valid data for {det}, {var_name}:{var}")
+        print("No valid data")
+        return
+
+    # -----------------------------
+    # Create hist container
+    # -----------------------------
+    edges = centers_to_edges(x)
+    
+    h = Hist(
+        Variable(edges, name="energy", label="Energy [keV]")
+    )
+    
+    h[...] = y
+
+    # -----------------------------
+    # Plot using mplhep
+    # -----------------------------
+    # hep.histplot(
+    #     h,
+    #     histtype="step",
+    #     color="black",
+    #     label=f"Mean {lq_filter}/E"
+    # )
+
+    # Add error bars manually
+    plt.errorbar(
+        x,
+        y,
+        yerr=yerr,
+        fmt='o',
+        color='black',
+        capsize=2
+    )
+
+    # -----------------------------
+    # Fit overlay
+    # -----------------------------
+    if not np.isnan(popt).any():
+        x_fit = np.linspace(np.min(x), np.max(x), 1000)
+        y_fit = model(x_fit, *popt)
+
+        m_fit, b_fit = popt
+        m_err, b_err = perr
+
+        # Chi-square
+        s_data = np.where(yerr <= 0, 1e-8, yerr)
+        y_model = model(x, *popt)
+        chi2 = np.sum(((y - y_model) / s_data) ** 2)
+        dof = len(x) - len(popt)
+        chi2_red = chi2 / dof if dof > 0 else np.nan
+
+        label = (
+            rf'Fit: $mE + b$'
+            + '\n'
+            + rf'$m = {m_fit:.3g} \pm {m_err:.3g}$, '
+              rf'$b = {b_fit:.3g} \pm {b_err:.3g}$'
+            + '\n'
+            + rf'$\chi^2_{{\mathrm{{red}}}} = {chi2_red:.3f}$'
+        )
+
+        plt.plot(x_fit, y_fit, '-', color='red', label=label)
+
+    # -----------------------------
+    # Formatting
+    # -----------------------------
+    plt.xlabel("Energy [keV]")
+    plt.ylabel(f"Mean ({lq_filter}/E)")
+    #plt.title(f"{det}, {var_name}: {var}")
+    plt.grid()
+    plt.legend()
+    plt.tight_layout()
+
+    # -----------------------------
+    # Save
+    # -----------------------------
+    #plot_dir = f"{figure_dir}/lqFit/{det}"
+    #os.makedirs(plot_dir, exist_ok=True)
+    #plt.savefig(f"{plot_dir}/{det}-{var_name}-{var}_{lq_filter}_means.png")
+    plt.close()
 ##################################
 
 def get_fit_range(lq: np.array) -> tuple(float, float):
@@ -777,6 +905,7 @@ class LQCal:
         lq_param,
         cal_energy_param: str, 
         display: int = 0,  
+        out_param: str = "LQ_Corrected",
     ):
         """
         performs an energy width correction to the LQ/E distribution. Fits across the energy range 250keV to 2650keV in 25keV
@@ -785,14 +914,30 @@ class LQCal:
         
         try:
             # 
-            bin_centers, means, mean_errs, sigmas, sigma_errs = extract_gaussian_trends(df[lq_param].to_numpy(),
+            lq_over_e = df[lq_param].to_numpy()/df[cal_energy_param].to_numpy()
+            
+            bin_centers, means, mean_errs, sigmas, sigma_errs, hist_pannels = extract_gaussian_trends(lq_over_e,#df[lq_param].to_numpy(),
                                                                                         df[cal_energy_param].to_numpy(),
                                                                                         np.linspace(250, 2650, 25)
                                                                                        )#energy_windows, 
                                                                                         #lq_filter)
                                                                                         
-            #fit a linear model to mu vs E
-            #popt_mean, perr_mean, mean_model = fit_mean_model(bin_centers, means, mean_errs)
+            #fit a linear model to mu vs E. outputs are used only in plots?
+            popt_mean, perr_mean, mean_model = fit_mean_model(bin_centers, means, mean_errs)
+
+            #this should be turned off regularly. im just putting it here for now
+            plot_mean_vs_energy(bin_centers = bin_centers, 
+                                means = means, 
+                                mean_errs = mean_errs, 
+                                model = mean_model, 
+                                popt = popt_mean, 
+                                perr = perr_mean, 
+                                lq_filter = lq_param, 
+                                #det = det, 
+                                #part = part, 
+                                #period = period
+                               )
+            
             #Fit sqrt(A/E^2+B) analytical model to sigma vs E
             popt_sigma, perr_sigma, sigma_model = fit_sigma_model(bin_centers, sigmas, sigma_errs)
 
@@ -822,15 +967,13 @@ class LQCal:
         
         width_sigma = np.sqrt((A_fit_sigma**2 / df[cal_energy_param]**2) + B_fit_sigma**2)
         #df['LQ_E_Width_Corrected'] = (df[lq_param] - mean_of_means) / width_sigma
-        df['LQ_Energy_Corrected'] = (df[lq_param] - mean_of_means) / width_sigma
+        df[out_param] = (df[lq_param] - mean_of_means) / width_sigma
 
-        
-       
-        
         
         #save the fit parameters
         self.update_cal_dicts(
-            {"LQ_E_width_Corrected": {"expression": f"({lq_param}-mean_of_means)/(np.sqrt((a**2/{cal_energy_param}**2)+b**2))",
+            {
+                out_param: {"expression": f"({lq_param}-mean_of_means)/(np.sqrt((a**2/{cal_energy_param}**2)+b**2))",
                     "parameters": {"a": self.A_fit_sigma, "b": self.B_fit_sigma, "mean_of_means": self.mean_of_means},
                 }
             }
@@ -871,7 +1014,7 @@ class LQCal:
 
         log.info("Starting LQ time correction")
         self.timecorr_df = pd.DataFrame()
-        output_name = "LQ_Timecorr"
+
         
         try:
             if "run_timestamp" in df:
@@ -1041,7 +1184,7 @@ class LQCal:
         lq_param,
         cal_energy_param: str,  # noqa: ARG002
         display: int = 0,  # noqa: ARG002
-        out_param: str = "LQ_Corrected",
+        out_param: str = "LQ_DT_Corrected",
     ):
         """
         Remove the linear drift-time dependence from the LQ distribution.
@@ -1138,8 +1281,6 @@ class LQCal:
     
       
 ##################################        
-
-
 
     def get_cut_lq_dep(
         self,
@@ -1252,26 +1393,32 @@ class LQCal:
         _n = (lambda base: f"{base}_{suffix}") if suffix else (lambda base: base)
 
         timecorr_name = _n("LQ_Timecorr")
+        #corrected_name = _n("LQ_Corrected")
+        dt_corrected_name = _n("LQ_DT_Corrected")
+        #energy_corrected_name = _n("LQ_Energy_Corrected")
         corrected_name = _n("LQ_Corrected")
-        energy_corrected_name = _n("LQ_Energy_Corrected")
         classifier_name = _n("LQ_Classifier")
         cut_name = _n("LQ_Cut")
 
-        self.lq_timecorr(df, initial_lq_param, output_name=timecorr_name)
-
+        self.lq_timecorr(df, 
+                         initial_lq_param, 
+                         output_name=timecorr_name)
         log.info("Finished LQ Time Correction")
 
         self.drift_time_correction(
             df,
             lq_param=timecorr_name,
             cal_energy_param=self.cal_energy_param,
-            out_param=corrected_name,
+            out_param=dt_corrected_name,
         )
         log.info("Finished LQ Drift Time Correction")
 
         #self.energy_width_correction(df, lq_param="LQ_Timecorr", cal_energy_param=self.cal_energy_param)
-        self.energy_width_correction(df, lq_param=corrected_name, cal_energy_param=self.cal_energy_param)
-        
+        self.energy_width_correction(df, 
+                                     lq_param=dt_corrected_name, 
+                                     cal_energy_param=self.cal_energy_param, 
+                                    out_param = corrected_name,
+                                    )
         log.info("Finished LQ E width Correction")
 
         self.get_cut_lq_dep(
