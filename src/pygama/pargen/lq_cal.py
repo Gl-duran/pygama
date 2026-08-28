@@ -285,7 +285,8 @@ def extract_gaussian_trends(
 #    lq_filter,
 #    det,
     tail_side="auto",
-    max_cols=3
+    max_cols=3, 
+    display = 0 #this is for getting the diagnostic plot of all the histograms with their fits
 ):
     means, mean_errors, sigmas, sigma_errs, bin_centers = [], [], [], [], []
 
@@ -336,92 +337,94 @@ def extract_gaussian_trends(
     #--------------------------------------------------
     # Make one compiled subplot figure for all windows
     # --------------------------------------------------
-    if len(hist_panels) > 0:
-        n_panels = len(hist_panels)
-        ncols = min(max_cols, n_panels)
-        nrows = math.ceil(n_panels / ncols)
-
-        fig, axs = plt.subplots(
-            nrows,
-            ncols,
-            figsize=(5 * ncols, 4 * nrows),
-            squeeze=False
-        )
-
-        axs_flat = axs.ravel()
-
-        for ax, panel in zip(axs_flat, hist_panels):
-            values = panel["values"]
-            lo = panel["lo"]
-            hi = panel["hi"]
-            popt = panel["popt"]
-            model = panel["model"]
-
-            # Robust histogram range
-            x_low, x_high = np.percentile(values, [0.5, 99.5])
-            pad = 0.05 * (x_high - x_low)
-            x_low -= pad
-            x_high += pad
-
-            # Bin count using existing FD logic, with fallback
-            bin_width = fd_bin_width(values)
-            if bin_width is None or bin_width <= 0:
-                nbins = 30
-            else:
-                nbins = max(10, int(np.ceil((x_high - x_low) / bin_width)))
-
-            h = Hist(
-                Regular(
-                    nbins,
-                    x_low,
-                    x_high,
-                    name="lqoe",
-                    #label=f"{lq_filter}/E"
-                )
+    if display >0:
+        if len(hist_panels) > 0:
+            n_panels = len(hist_panels)
+            ncols = min(max_cols, n_panels)
+            nrows = math.ceil(n_panels / ncols)
+    
+            fig, axs = plt.subplots(
+                nrows,
+                ncols,
+                figsize=(5 * ncols, 4 * nrows),
+                squeeze=False
             )
-            h.fill(lqoe=values)
-
-            hep.histplot(
-                h,
-                ax=ax,
-                histtype="step",
-                label="Data"
-            )
-
-            if popt is not None and model is not None:
-                x_fit = np.linspace(x_low, x_high, 1000)
-                y_fit = model(x_fit, *popt)
-
-                ax.plot(
-                    x_fit,
-                    y_fit,
-                    color="red",
-                    lw=2,
-                    label=(
-                        rf"$\mu={panel['mean']:.3g}\pm{panel['mean_err']:.2g}$"
-                        + "\n"
-                        + rf"$\sigma={panel['sigma']:.3g}\pm{panel['sigma_err']:.2g}$"
+    
+            axs_flat = axs.ravel()
+    
+            for ax, panel in zip(axs_flat, hist_panels):
+                values = panel["values"]
+                lo = panel["lo"]
+                hi = panel["hi"]
+                popt = panel["popt"]
+                model = panel["model"]
+    
+                # Robust histogram range
+                x_low, x_high = np.percentile(values, [0.5, 99.5])
+                pad = 0.05 * (x_high - x_low)
+                x_low -= pad
+                x_high += pad
+    
+                # Bin count using existing FD logic, with fallback
+                bin_width = fd_bin_width(values)
+                if bin_width is None or bin_width <= 0:
+                    nbins = 30
+                else:
+                    nbins = max(10, int(np.ceil((x_high - x_low) / bin_width)))
+    
+                h = Hist(
+                    Regular(
+                        nbins,
+                        x_low,
+                        x_high,
+                        name="lqoe",
+                        #label=f"{lq_filter}/E"
                     )
                 )
-
-            ax.set_title(f"{lo:.0f}–{hi:.0f} keV")
-            ax.set_xlabel('LQ/E')#(f"{lq_filter}/E")
-            ax.set_ylabel("Counts")
-            ax.grid(True)
-            ax.legend(fontsize=8)
-
-        # Turn off unused subplots
-        for ax in axs_flat[len(hist_panels):]:
-            ax.axis("off")
-
-        #fig.suptitle(f"{det}: {lq_filter}/E fits by energy window", fontsize=14)
-        fig.tight_layout(rect=[0, 0, 1, 0.96])
-
-        #plot_dir = f"{figure_dir}/lqFit/{det}"
-        #os.makedirs(plot_dir, exist_ok=True)
-        #fig.savefig(f"{plot_dir}/{det}_{lq_filter}_energy_window_fit_histograms.png")
-        plt.show(fig)
-        plt.close(fig)
+                h.fill(lqoe=values)
+    
+                hep.histplot(
+                    h,
+                    ax=ax,
+                    histtype="step",
+                    label="Data"
+                )
+    
+                if popt is not None and model is not None:
+                    x_fit = np.linspace(x_low, x_high, 1000)
+                    y_fit = model(x_fit, *popt)
+    
+                    ax.plot(
+                        x_fit,
+                        y_fit,
+                        color="red",
+                        lw=2,
+                        label=(
+                            rf"$\mu={panel['mean']:.3g}\pm{panel['mean_err']:.2g}$"
+                            + "\n"
+                            + rf"$\sigma={panel['sigma']:.3g}\pm{panel['sigma_err']:.2g}$"
+                        )
+                    )
+    
+                ax.set_title(f"{lo:.0f}–{hi:.0f} keV")
+                ax.set_xlabel('LQ/E')#(f"{lq_filter}/E")
+                ax.set_ylabel("Counts")
+                ax.grid(True)
+                ax.legend(fontsize=8)
+    
+            # Turn off unused subplots
+            for ax in axs_flat[len(hist_panels):]:
+                ax.axis("off")
+    
+            #fig.suptitle(f"{det}: {lq_filter}/E fits by energy window", fontsize=14)
+            fig.tight_layout(rect=[0, 0, 1, 0.96])
+    
+            #plot_dir = f"{figure_dir}/lqFit/{det}"
+            #os.makedirs(plot_dir, exist_ok=True)
+            #fig.savefig(f"{plot_dir}/{det}_{lq_filter}_energy_window_fit_histograms.png")
+            #this needs to be updated to like... return the plots somehwere or save them or something
+            plt.show(fig)
+            plt.close(fig)
     ###----------
 
 
@@ -648,6 +651,8 @@ def plot_mean_vs_energy(
     #plot_dir = f"{figure_dir}/lqFit/{det}"
     #os.makedirs(plot_dir, exist_ok=True)
     #plt.savefig(f"{plot_dir}/{det}-{var_name}-{var}_{lq_filter}_means.png")
+    
+    #this needs to be updated to like... return the plots somehwere or save them or something
     plt.show()
     plt.close()
 
@@ -758,6 +763,8 @@ def plot_sigma_vs_energy(
     #plot_dir = f"{figure_dir}/lqFit/{det}"
     #os.makedirs(plot_dir, exist_ok=True)
     #plt.savefig(f"{plot_dir}/{det}-{var_name}-{var}_{lq_filter}_sigmas.png")
+
+    #this needs to be updated to like... return the plots somehwere or save them or something
     plt.show()
     plt.close()
 
@@ -1111,12 +1118,32 @@ class LQCal:
         else:
             self.cal_dicts.update(update_dict)
 ######################
-    def energy_width_correction(
+    def get_lq_over_e(
         self,
         df: pd.DataFrame(),
         lq_param,
         cal_energy_param: str, 
         display: int = 0,  
+        out_param: str = "LQ_over_E",
+    ):
+        try:
+            lq_over_e = df[lq_param].to_numpy()/df[cal_energy_param].to_numpy()
+            
+        except Exception as e:
+            if self.debug_mode:
+                raise
+            log.error("LQ over correction failed: %s", e)
+            #self.dt_fit_pars = (np.nan, np.nan)
+    
+        df[out_param] = lq_over_e
+            
+        
+    def energy_width_correction(
+        self,
+        df: pd.DataFrame(),
+        lq_param,
+        cal_energy_param: str, 
+        display: int = 0,  #this is for diagnostic plots
         out_param: str = "LQ_Corrected",
     ):
         """
@@ -1128,9 +1155,10 @@ class LQCal:
             # 
             lq_over_e = df[lq_param].to_numpy()/df[cal_energy_param].to_numpy()
             
-            bin_centers, means, mean_errs, sigmas, sigma_errs, hist_pannels = extract_gaussian_trends(lq_over_e,#df[lq_param].to_numpy(),
+            bin_centers, means, mean_errs, sigmas, sigma_errs, hist_pannels = extract_gaussian_trends(df[lq_param].to_numpy(),
                                                                                         df[cal_energy_param].to_numpy(),
-                                                                                        np.linspace(250, 2650, 25)
+                                                                                        np.linspace(250, 2650, 25), 
+                                                                                        display = display
                                                                                        )#energy_windows, 
                                                                                         #lq_filter)
                                                                                         
@@ -1146,31 +1174,32 @@ class LQCal:
 
             #these should be turned off regularly. im just putting it here for now
             ###-----------------------
-            plot_mean_vs_energy(bin_centers = bin_centers, 
-                                means = means, 
-                                mean_errs = mean_errs, 
-                                model = mean_model, 
-                                popt = popt_mean, 
-                                perr = perr_mean, 
-                                lq_filter = lq_param, 
-                                #det = det, 
-                                #part = part, 
-                                #period = period
-                               )
-
-
-            plot_sigma_vs_energy(bin_centers = bin_centers, 
-                                 sigmas = sigmas, 
-                                 sigma_errs = sigma_errs, 
-                                 model = sigma_model, 
-                                 popt= popt_sigma, 
-                                 perr = perr_sigma, 
-                                 lq_filter = lq_param, 
-                                 #det = det, 
-                                 #part = part, 
-                                 #period = period
-                                )
-            ###------------------------
+            if display > 0:
+                plot_mean_vs_energy(bin_centers = bin_centers, 
+                                    means = means, 
+                                    mean_errs = mean_errs, 
+                                    model = mean_model, 
+                                    popt = popt_mean, 
+                                    perr = perr_mean, 
+                                    lq_filter = lq_param, 
+                                    #det = det, 
+                                    #part = part, 
+                                    #period = period
+                                   )
+    
+    
+                plot_sigma_vs_energy(bin_centers = bin_centers, 
+                                     sigmas = sigmas, 
+                                     sigma_errs = sigma_errs, 
+                                     model = sigma_model, 
+                                     popt= popt_sigma, 
+                                     perr = perr_sigma, 
+                                     lq_filter = lq_param, 
+                                     #det = det, 
+                                     #part = part, 
+                                     #period = period
+                                    )
+                ###------------------------
             
 
 
@@ -1183,7 +1212,7 @@ class LQCal:
             if self.debug_mode:
                 raise
             log.error("LQ energy width correction failed: %s", e)
-            self.dt_fit_pars = (np.nan, np.nan)
+            self.energy_fit_pars = (np.nan, np.nan, np.nan)
 
 
         #for testing just print them nevermind okay just reinspectt
@@ -1211,7 +1240,7 @@ class LQCal:
         
 
 ######################
-
+    
     def lq_timecorr(self, 
                     df, 
                     lq_param, 
@@ -1621,6 +1650,7 @@ class LQCal:
 
         _n = (lambda base: f"{base}_{suffix}") if suffix else (lambda base: base)
 
+        lq_over_e_name = _n("LQ_over_E")
         timecorr_name = _n("LQ_Timecorr")
         #corrected_name = _n("LQ_Corrected")
         dt_corrected_name = _n("LQ_DT_Corrected")
@@ -1629,11 +1659,17 @@ class LQCal:
         classifier_name = _n("LQ_Classifier")
         cut_name = _n("LQ_Cut")
 
+        self.get_lq_over_e(df, 
+                           initial_lq_param, 
+                           cal_energy_param=self.cal_energy_param,
+                           out_param= lq_over_e_name)
+
         self.lq_timecorr(df, 
-                         initial_lq_param, 
+                         lq_over_e_name, #initial_lq_param, 
                          output_name=timecorr_name)
         log.info("Finished LQ Time Correction")
-
+        
+        
         self.drift_time_correction(
             df,
             lq_param=timecorr_name,
@@ -1646,10 +1682,16 @@ class LQCal:
         self.energy_width_correction(df, 
                                      lq_param=dt_corrected_name, 
                                      cal_energy_param=self.cal_energy_param, 
-                                    out_param = corrected_name,
+                                     out_param = corrected_name,
+        ##################this is on for testing i need to make sure to turn it off again for real                             
+                                     display = 1,
                                     )
         log.info("Finished LQ E width Correction")
 
+        
+
+
+        
         self.get_cut_lq_dep(
            # df, lq_param="LQ_E_Width_Corrected", cal_energy_param=self.cal_energy_param #this is the old naming i had
             df,
@@ -1833,7 +1875,7 @@ def plot_drift_time_correction(
         ]
         max_dt = 1500
         max_lq = 2.5
-
+#please remember to turn this back on
         plt.hist2d(
             initial_df["dt_eff"],
             initial_df[lq_param],
