@@ -54,6 +54,12 @@ log = logging.getLogger(__name__)
 ########
 from scipy.optimize import curve_fit
 from scipy.stats import norm, exponnorm
+#for plotting
+from hist import Hist
+from hist.axis import Regular
+from hist.axis import Variable
+import math
+import mplhep as hep
 
 def fd_bin_width(data):
     """Freedman-Diaconis bin width: best for general use and skewed data."""
@@ -325,8 +331,101 @@ def extract_gaussian_trends(
                     "mean_err": mean_err,
                     "sigma_err": sigma_err,
                 })
-                
+    
+    ###-----also plotting stuff here that shouldn't be on regularly
+    #--------------------------------------------------
+    # Make one compiled subplot figure for all windows
+    # --------------------------------------------------
+    if len(hist_panels) > 0:
+        n_panels = len(hist_panels)
+        ncols = min(max_cols, n_panels)
+        nrows = math.ceil(n_panels / ncols)
 
+        fig, axs = plt.subplots(
+            nrows,
+            ncols,
+            figsize=(5 * ncols, 4 * nrows),
+            squeeze=False
+        )
+
+        axs_flat = axs.ravel()
+
+        for ax, panel in zip(axs_flat, hist_panels):
+            values = panel["values"]
+            lo = panel["lo"]
+            hi = panel["hi"]
+            popt = panel["popt"]
+            model = panel["model"]
+
+            # Robust histogram range
+            x_low, x_high = np.percentile(values, [0.5, 99.5])
+            pad = 0.05 * (x_high - x_low)
+            x_low -= pad
+            x_high += pad
+
+            # Bin count using existing FD logic, with fallback
+            bin_width = fd_bin_width(values)
+            if bin_width is None or bin_width <= 0:
+                nbins = 30
+            else:
+                nbins = max(10, int(np.ceil((x_high - x_low) / bin_width)))
+
+            h = Hist(
+                Regular(
+                    nbins,
+                    x_low,
+                    x_high,
+                    name="lqoe",
+                    #label=f"{lq_filter}/E"
+                )
+            )
+            h.fill(lqoe=values)
+
+            hep.histplot(
+                h,
+                ax=ax,
+                histtype="step",
+                label="Data"
+            )
+
+            if popt is not None and model is not None:
+                x_fit = np.linspace(x_low, x_high, 1000)
+                y_fit = model(x_fit, *popt)
+
+                ax.plot(
+                    x_fit,
+                    y_fit,
+                    color="red",
+                    lw=2,
+                    label=(
+                        rf"$\mu={panel['mean']:.3g}\pm{panel['mean_err']:.2g}$"
+                        + "\n"
+                        + rf"$\sigma={panel['sigma']:.3g}\pm{panel['sigma_err']:.2g}$"
+                    )
+                )
+
+            ax.set_title(f"{lo:.0f}–{hi:.0f} keV")
+            ax.set_xlabel('LQ/E')#(f"{lq_filter}/E")
+            ax.set_ylabel("Counts")
+            ax.grid(True)
+            ax.legend(fontsize=8)
+
+        # Turn off unused subplots
+        for ax in axs_flat[len(hist_panels):]:
+            ax.axis("off")
+
+        #fig.suptitle(f"{det}: {lq_filter}/E fits by energy window", fontsize=14)
+        fig.tight_layout(rect=[0, 0, 1, 0.96])
+
+        #plot_dir = f"{figure_dir}/lqFit/{det}"
+        #os.makedirs(plot_dir, exist_ok=True)
+        #fig.savefig(f"{plot_dir}/{det}_{lq_filter}_energy_window_fit_histograms.png")
+        plt.show(fig)
+        plt.close(fig)
+    ###----------
+
+
+    
     return (
         np.array(bin_centers),
         np.array(means),
@@ -531,6 +630,7 @@ def plot_mean_vs_energy(
         )
 
         plt.plot(x_fit, y_fit, '-', color='red', label=label)
+        
 
     # -----------------------------
     # Formatting
@@ -548,7 +648,119 @@ def plot_mean_vs_energy(
     #plot_dir = f"{figure_dir}/lqFit/{det}"
     #os.makedirs(plot_dir, exist_ok=True)
     #plt.savefig(f"{plot_dir}/{det}-{var_name}-{var}_{lq_filter}_means.png")
+    plt.show()
     plt.close()
+
+def plot_sigma_vs_energy(
+    bin_centers,
+    sigmas,
+    sigma_errs,
+    model,
+    popt,
+    perr,
+    lq_filter,
+    det=None,
+    part=None,
+    period=None
+):
+    plt.figure(figsize=(6, 5))
+
+    if part is not None:
+        var = part
+        var_name = "part"
+    else:
+        var = period
+        var_name = "period"
+
+    # -----------------------------
+    # Clean data
+    # -----------------------------
+    mask = np.isfinite(bin_centers) & np.isfinite(sigmas) & np.isfinite(sigma_errs)
+    x = np.asarray(bin_centers[mask], dtype=float)
+    y = np.asarray(sigmas[mask], dtype=float)
+    yerr = np.asarray(sigma_errs[mask], dtype=float)
+
+    if len(x) == 0:
+        print("No valid data")
+        #print(f"No valid sigma data for {det}, {var_name}:{var}")
+        return
+
+    
+    # -----------------------------
+    # Hist container for trend points
+    # -----------------------------
+    edges = centers_to_edges(x)
+    
+    h = Hist(
+        Variable(edges, name="energy", label="Energy [keV]")
+    )
+    
+    h[...] = y
+
+    # hep.histplot(
+    #     h,
+    #     histtype="step",
+    #     color="black",
+    #     label=f"Sigma {lq_filter}/E"
+    # )
+
+    plt.errorbar(
+        x,
+        y,
+        yerr=yerr,
+        fmt="o",
+        color="black",
+        capsize=2
+    )
+
+    # -----------------------------
+    # Fit overlay
+    # -----------------------------
+    if not np.isnan(popt).any():
+        x_fit = np.linspace(np.min(x), np.max(x), 1000)
+        y_fit = model(x_fit, *popt)
+
+        A_fit, B_fit = popt
+        A_err, B_err = perr
+
+        s_data = np.where(yerr <= 0, 1e-8, yerr)
+
+        y_model = model(x, *popt)
+        residuals = y - y_model
+        chi2 = np.sum((residuals / s_data) ** 2)
+        dof = len(x) - len(popt)
+        chi2_red = chi2 / dof if dof > 0 else np.nan
+
+        label = (
+            rf'Fit: $\sqrt{{\left| \frac{{A}}{{E^2}} + B \right|}}$'
+            + '\n'
+            + rf'$A = {A_fit:.3f} \pm {A_err:.3f}$, '
+              rf'$B = {B_fit:.3f} \pm {B_err:.3f}$'
+            + '\n'
+            + rf'$\chi^2_{{\mathrm{{red}}}} = {chi2_red:.3f}$'
+        )
+
+        plt.plot(
+            x_fit,
+            y_fit,
+            "-",
+            color="red",
+            label=label
+        )
+
+    plt.xlabel("Energy [keV]")
+    plt.ylabel(f"σ ({lq_filter}/E)")
+    #plt.title(f"{det}, {var_name}:{var}")
+    plt.grid()
+    plt.legend()
+    plt.tight_layout()
+
+    #plot_dir = f"{figure_dir}/lqFit/{det}"
+    #os.makedirs(plot_dir, exist_ok=True)
+    #plt.savefig(f"{plot_dir}/{det}-{var_name}-{var}_{lq_filter}_sigmas.png")
+    plt.show()
+    plt.close()
+
 ##################################
 
 def get_fit_range(lq: np.array) -> tuple(float, float):
@@ -925,7 +1137,15 @@ class LQCal:
             #fit a linear model to mu vs E. outputs are used only in plots?
             popt_mean, perr_mean, mean_model = fit_mean_model(bin_centers, means, mean_errs)
 
-            #this should be turned off regularly. im just putting it here for now
+            #Fit sqrt(A/E^2+B) analytical model to sigma vs E
+            popt_sigma, perr_sigma, sigma_model = fit_sigma_model(bin_centers, sigmas, sigma_errs)
+
+            #seperate out the parameters
+            A_fit_sigma, B_fit_sigma = popt_sigma
+            mean_of_means= float(np.mean(means))
+
+            #these should be turned off regularly. im just putting it here for now
+            ###-----------------------
             plot_mean_vs_energy(bin_centers = bin_centers, 
                                 means = means, 
                                 mean_errs = mean_errs, 
@@ -937,13 +1157,22 @@ class LQCal:
                                 #part = part, 
                                 #period = period
                                )
-            
-            #Fit sqrt(A/E^2+B) analytical model to sigma vs E
-            popt_sigma, perr_sigma, sigma_model = fit_sigma_model(bin_centers, sigmas, sigma_errs)
 
-            #seperate out the parameters
-            A_fit_sigma, B_fit_sigma = popt_sigma
-            mean_of_means= float(np.mean(means))
+
+            plot_sigma_vs_energy(bin_centers = bin_centers, 
+                                 sigmas = sigmas, 
+                                 sigma_errs = sigma_errs, 
+                                 model = sigma_model, 
+                                 popt= popt_sigma, 
+                                 perr = perr_sigma, 
+                                 lq_filter = lq_param, 
+                                 #det = det, 
+                                 #part = part, 
+                                 #period = period
+                                )
+            ###------------------------
+            
+
 
             self.A_fit_sigma = A_fit_sigma
             self.B_fit_sigma = B_fit_sigma
