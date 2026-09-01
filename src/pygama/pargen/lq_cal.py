@@ -34,6 +34,7 @@ import pygama.pargen.AoE_cal as AoE
 from pygama.math.distributions import gaussian
 from pygama.pargen.survival_fractions import compton_sf_sweep, get_sf_sweep
 
+#for 
 from sklearn.covariance import MinCovDet
 from sklearn.linear_model import LinearRegression
 
@@ -1443,6 +1444,7 @@ class LQCal:
         cal_energy_param: str,  # noqa: ARG002
         display: int = 0,  # noqa: ARG002
         out_param: str = "LQ_DT_Corrected",
+        mode: str = "linear", #linear is the original method, LR-MCD is the other method
     ):
         """
         Remove the linear drift-time dependence from the LQ distribution.
@@ -1468,77 +1470,170 @@ class LQCal:
         """
 
         log.info("Starting LQ drift time correction")
-        try:
+        if mode == "linear":
             try:
-                pars = binned_lq_fit(df, lq_param, self.cal_energy_param, peak=1592.5)[
-                    0
-                ]
-            except Exception as e:
-                msg = "binned LQ fit at DEP failed"
-                raise RuntimeError(msg) from e
-            mean = pars[0]
-            sigma = pars[1]
-
-            try:
-                dep_events = df.query(
-                    f"{self.cal_energy_param} > 1589.5 & {self.cal_energy_param} < 1595.5 & {self.cal_energy_param}=={self.cal_energy_param}&{lq_param}=={lq_param}"
-                )
-
-                dt_range = [
-                    np.nanpercentile(dep_events[self.dt_param], 10),
-                    np.nanpercentile(dep_events[self.dt_param], 95),
-                ]
-
-                lq_range = [mean - 2 * sigma, mean + 2 * sigma]
-
-                self.lq_range = lq_range
-                self.dt_range = dt_range
-
-                final_df = dep_events.query(
-                    f"{lq_param} > {lq_range[0]} & {lq_param} < {lq_range[1]} & {self.dt_param} > {dt_range[0]} & {self.dt_param} < {dt_range[1]}"
-                )
-            except Exception as e:
-                msg = "DEP event selection failed"
-                raise RuntimeError(msg) from e
-
-            try:
-                result = linregress(
-                    final_df[self.dt_param],
-                    final_df[lq_param],
-                    alternative="greater",
-                )
-            except Exception as e:
-                msg = "drift-time linear regression failed"
-                raise RuntimeError(msg) from e
-            self.dt_fit_pars = result
-
-            try:
-                df[out_param] = (
-                    df[lq_param]
-                    - df[self.dt_param] * self.dt_fit_pars[0]
-                    - self.dt_fit_pars[1]
-                )
-            except Exception as e:
-                msg = "applying LQ drift-time correction failed"
-                raise RuntimeError(msg) from e
-
-        except Exception as e:
-            if self.debug_mode:
-                raise
-            log.error("LQ drift time correction failed: %s", e)
-            self.dt_fit_pars = (np.nan, np.nan)
-
-        self.update_cal_dicts(
-            {
-                out_param: {
-                    "expression": f"{lq_param} - {self.dt_param}*a - b",
-                    "parameters": {"a": self.dt_fit_pars[0], "b": self.dt_fit_pars[1]},
-                }
-            }
-        )
+                try:
+                    pars = binned_lq_fit(df, lq_param, self.cal_energy_param, peak=1592.5)[
+                        0
+                    ]
+                except Exception as e:
+                    msg = "binned LQ fit at DEP failed"
+                    raise RuntimeError(msg) from e
+                mean = pars[0]
+                sigma = pars[1]
     
-      
-##################################        
+                try:
+                    dep_events = df.query(
+                        f"{self.cal_energy_param} > 1589.5 & {self.cal_energy_param} < 1595.5 & {self.cal_energy_param}=={self.cal_energy_param}&{lq_param}=={lq_param}"
+                    )
+    
+                    dt_range = [
+                        np.nanpercentile(dep_events[self.dt_param], 10),
+                        np.nanpercentile(dep_events[self.dt_param], 95),
+                    ]
+    
+                    lq_range = [mean - 2 * sigma, mean + 2 * sigma]
+    
+                    self.lq_range = lq_range
+                    self.dt_range = dt_range
+    
+                    final_df = dep_events.query(
+                        f"{lq_param} > {lq_range[0]} & {lq_param} < {lq_range[1]} & {self.dt_param} > {dt_range[0]} & {self.dt_param} < {dt_range[1]}"
+                    )
+                except Exception as e:
+                    msg = "DEP event selection failed"
+                    raise RuntimeError(msg) from e
+                
+        
+                try:
+                    result = linregress(
+                        final_df[self.dt_param],
+                        final_df[lq_param],
+                        alternative="greater",
+                    )
+                except Exception as e:
+                    msg = "drift-time linear regression failed"
+                    raise RuntimeError(msg) from e
+                self.dt_fit_pars = result
+    
+                try:
+                    df[out_param] = (
+                        df[lq_param]
+                        - df[self.dt_param] * self.dt_fit_pars[0]
+                        - self.dt_fit_pars[1]
+                    )
+                except Exception as e:
+                    msg = "applying LQ drift-time correction failed"
+                    raise RuntimeError(msg) from e
+    
+            except Exception as e:
+                if self.debug_mode:
+                    raise
+                log.error("LQ drift time correction (linear mode) failed: %s", e)
+                self.dt_fit_pars = (np.nan, np.nan)
+    
+            self.update_cal_dicts(
+                {
+                    out_param: {
+                        "expression": f"{lq_param} - {self.dt_param}*a - b",
+                        "parameters": {"a": self.dt_fit_pars[0], "b": self.dt_fit_pars[1]},
+                    }
+                }
+            )
+#####################here is the other mode
+        elif mode == "LR-MCD":
+        #want to try with keeping the same dataselection as for the "linear" method    
+            try:
+                try:
+                    pars = binned_lq_fit(df, lq_param, self.cal_energy_param, peak=1592.5)[
+                        0
+                    ]
+                except Exception as e:
+                    msg = "binned LQ fit at DEP failed"
+                    raise RuntimeError(msg) from e
+                mean = pars[0]
+                sigma = pars[1]
+    
+                try:
+                    dep_events = df.query(
+                        f"{self.cal_energy_param} > 1589.5 & {self.cal_energy_param} < 1595.5 & {self.cal_energy_param}=={self.cal_energy_param}&{lq_param}=={lq_param}"
+                    )
+    
+                    dt_range = [
+                        np.nanpercentile(dep_events[self.dt_param], 10),
+                        np.nanpercentile(dep_events[self.dt_param], 95),
+                    ]
+    
+                    lq_range = [mean - 2 * sigma, mean + 2 * sigma]
+    
+                    self.lq_range = lq_range
+                    self.dt_range = dt_range
+    
+                    final_df = dep_events.query(
+                        f"{lq_param} > {lq_range[0]} & {lq_param} < {lq_range[1]} & {self.dt_param} > {dt_range[0]} & {self.dt_param} < {dt_range[1]}"
+                    )
+                except Exception as e:
+                    msg = "DEP event selection failed"
+                    raise RuntimeError(msg) from e
+                
+                ###########here is the difference between linear and LR-MCD #############
+                try:
+                    data_dep = final_df[[self.dt_param, lq_param]]
+                    mcd = MinCovDet().fit(data_dep.to_numpy())
+                    inliers = data_dep[mcd.support_]
+
+
+                    # ------------------------------------------------------------------
+                    # LR-MCD
+                    # ------------------------------------------------------------------
+                    #inlier_dt = inliers[:, 0]
+                    #inlier_lq = inliers[:, 1]
+                    inlier_dt = inliers.to_numpy()[:, 0]
+                    inlier_lq = inliers.to_numpy()[:, 1]
+
+                    lr_mcd = LinearRegression().fit(inlier_dt.reshape(-1, 1), inlier_lq)
+                
+                    slope_lr_mcd = lr_mcd.coef_[0]
+                    intercept_lr_mcd = lr_mcd.intercept_
+                    r2_lr_mcd = lr_mcd.score(inlier_dt.reshape(-1, 1), inlier_lq)
+
+                    x_vals = np.linspace(final_df[self.dt_param].min(), final_df[self.dt_param].max(), 500)
+                    
+                    y_lr_mcd = slope_lr_mcd * x_vals + intercept_lr_mcd
+
+                    #correction
+                    corrected_lr_mcd = data_dep[lq_param] - (slope_lr_mcd * data_dep[self.dt_param] + intercept_lr_mcd)
+                    corrected_lr_mcd -= np.mean(corrected_lr_mcd)
+    
+                    
+                    #get the mean of the lq over E dt corrected values
+                    lq_dt_cor_mean = np.mean(corrected_lr_mcd)
+                
+                except Exception as e:
+                    msg = "applying LQ drift-time correction (LR-MCD mode) failed"
+                    raise RuntimeError(msg) from e
+                
+                self.dt_fit_pars = lr_mcd
+            
+                    
+            except Exception as e:
+                if self.debug_mode:
+                    raise
+                log.error("LQ drift time correction failed: %s", e)
+                self.dt_fit_pars = (np.nan, np.nan)
+            self.update_cal_dicts(
+                {
+                    out_param: {
+                        "expression":  f"{lq_param} - (slope_lr_mcd * dt_eff + intercept_lr_mcd) - lq_dt_cor_mean",
+                        "parameters": {"slope_lr_mcd": slope_lr_mcd, 
+                                       "intercept_lr_mcd": intercept_lr_mcd, 
+                                       "r2":r2_lr_mcd, 
+                                       "lq_dt_cor_mean": lq_dt_cor_mean},
+                    }
+                }
+            )        
+##################################     
+       
 
     def get_cut_lq_dep(
         self,
