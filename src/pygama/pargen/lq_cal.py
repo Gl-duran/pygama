@@ -1650,7 +1650,7 @@ class LQCal:
 
         _n = (lambda base: f"{base}_{suffix}") if suffix else (lambda base: base)
 
-        lq_over_e_name = _n("LQ_over_E")
+        #lq_over_e_name = _n("LQ_over_E")
         timecorr_name = _n("LQ_Timecorr")
         #corrected_name = _n("LQ_Corrected")
         dt_corrected_name = _n("LQ_DT_Corrected")
@@ -1659,13 +1659,13 @@ class LQCal:
         classifier_name = _n("LQ_Classifier")
         cut_name = _n("LQ_Cut")
 
-        self.get_lq_over_e(df, 
-                           initial_lq_param, 
-                           cal_energy_param=self.cal_energy_param,
-                           out_param= lq_over_e_name)
+        #self.get_lq_over_e(df, 
+        #                   initial_lq_param, 
+        #                   cal_energy_param=self.cal_energy_param,
+        #                   out_param= lq_over_e_name)
 
         self.lq_timecorr(df, 
-                         lq_over_e_name, #initial_lq_param, 
+                         initial_lq_param, #lq_over_e_name
                          output_name=timecorr_name)
         log.info("Finished LQ Time Correction")
         
@@ -1684,7 +1684,7 @@ class LQCal:
                                      cal_energy_param=self.cal_energy_param, 
                                      out_param = corrected_name,
         ##################this is on for testing i need to make sure to turn it off again for real                             
-                                     display = 1,
+                                     display = 0,
                                     )
         log.info("Finished LQ E width Correction")
 
