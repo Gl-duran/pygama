@@ -1207,6 +1207,8 @@ class LQCal:
             self.A_fit_sigma = A_fit_sigma
             self.B_fit_sigma = B_fit_sigma
             self.mean_of_means = mean_of_means
+
+            self.gauss_trends_hist = hist_pannels
             
             
         except Exception as e:
@@ -2255,3 +2257,145 @@ def plot_classifier(
     plt.ylim(yrange)
     plt.close()
     return fig
+
+#------------------------------------------------------------------------------------
+"""
+def plot_energy_means(
+    lq_class,
+    data,
+    lq_param="LQ_Classifier",
+    xrange=(800, 3000),
+    yrange=(-10, 30),
+    xn_bins=700,
+    yn_bins=500,
+    figsize=(12, 8),
+    fontsize=12,
+) -> plt.figure:
+    plt.rcParams["figure.figsize"] = figsize
+    plt.rcParams["font.size"] = fontsize
+
+    fig = plt.figure()
+"""
+"""
+def plot_energy_sigmas(
+    lq_class,
+    data,
+    lq_param="LQ_Classifier",
+    xrange=(800, 3000),
+    yrange=(-10, 30),
+    xn_bins=700,
+    yn_bins=500,
+    figsize=(12, 8),
+    fontsize=12,
+) -> plt.figure:
+    plt.rcParams["figure.figsize"] = figsize
+    plt.rcParams["font.size"] = fontsize
+
+    fig = plt.figure()
+"""
+
+def plot_gaussian_trends_hist(
+    lq_class, 
+    data, 
+    lq_pramam = "LQ_classifier",
+    max_cols = 3,
+    figsize = (24, 16), 
+    fontsize = 12,
+) -> plt.figure:
+    plt.rcParams["figure.figsize"] = figsize
+    plt.rcParams["font.size"] = fontsize
+
+    hist_panels = lq_class.gauss_trends_hist
+    
+        
+    if len(hist_panels) > 0:
+        n_panels = len(hist_panels)
+        ncols = min(max_cols, n_panels)
+        nrows = math.ceil(n_panels / ncols)
+    
+        fig, axs = plt.subplots(
+            nrows,
+            ncols,
+            figsize=(5 * ncols, 4 * nrows),
+            squeeze=False
+        )
+    
+        axs_flat = axs.ravel()
+    
+        for ax, panel in zip(axs_flat, hist_panels):
+            values = panel["values"]
+            lo = panel["lo"]
+            hi = panel["hi"]
+            popt = panel["popt"]
+            model = panel["model"]
+    
+            # Robust histogram range
+            x_low, x_high = np.percentile(values, [0.5, 99.5])
+            pad = 0.05 * (x_high - x_low)
+            x_low -= pad
+            x_high += pad
+    
+            # Bin count using existing FD logic, with fallback
+            bin_width = fd_bin_width(values)
+            if bin_width is None or bin_width <= 0:
+                nbins = 30
+            else:
+                nbins = max(10, int(np.ceil((x_high - x_low) / bin_width)))
+    
+            h = Hist(
+                Regular(
+                    nbins,
+                    x_low,
+                    x_high,
+                    name="lqoe",
+                    label=f"{lq_pramam}/E"
+                )
+            )
+            h.fill(lqoe=values)
+    
+            hep.histplot(
+                h,
+                ax=ax,
+                histtype="step",
+                label="Data"
+            )
+    
+            if popt is not None and model is not None:
+                x_fit = np.linspace(x_low, x_high, 1000)
+                y_fit = model(x_fit, *popt)
+    
+                ax.plot(
+                    x_fit,
+                    y_fit,
+                    color="red",
+                    lw=2,
+                    label=(
+                        rf"$\mu={panel['mean']:.3g}\pm{panel['mean_err']:.2g}$"
+                        + "\n"
+                        + rf"$\sigma={panel['sigma']:.3g}\pm{panel['sigma_err']:.2g}$"
+                    )
+                )
+    
+            ax.set_title(f"{lo:.0f}–{hi:.0f} keV")
+            ax.set_xlabel(f"{lq_pramam}/E")
+            ax.set_ylabel("Counts")
+            ax.grid(True)
+            ax.legend(fontsize=8)
+    
+        # Turn off unused subplots
+        for ax in axs_flat[len(hist_panels):]:
+            ax.axis("off")
+    
+        #fig.suptitle(f"{det}: {lq_filter}/E fits by energy window", fontsize=14)
+        fig.tight_layout(rect=[0, 0, 1, 0.96])
+    
+        #plot_dir = f"{figure_dir}/lqFit/{det}"
+        #os.makedirs(plot_dir, exist_ok=True)
+        #fig.savefig(f"{plot_dir}/{det}_{lq_filter}_energy_window_fit_histograms.png")
+        #this needs to be updated to like... return the plots somehwere or save them or something
+        #plt.show(fig)
+        
+        plt.close(fig)
+        return(fig)
+    ###----------
+    
