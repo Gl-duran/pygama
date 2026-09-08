@@ -234,7 +234,7 @@ def fit_gaussian_tail_to_histogram(
     )
 
     try:
-        popt, pcov = curve_fit(
+        popt, pcov,_, mesg, ier = curve_fit(
             model,
             bin_centers,
             hist,
@@ -242,7 +242,12 @@ def fit_gaussian_tail_to_histogram(
             bounds=bounds,
             maxfev=50000
         )
-
+##########
+        if ier == 1 or 2 or 3 or 4:
+            continue
+        else: 
+            print(mesg)
+##########
         perr = np.sqrt(np.diag(pcov))
 
         A_g_fit, mu_fit, sigma_fit, A_t_fit, tau_fit = popt
@@ -310,7 +315,8 @@ def extract_gaussian_trends(
             result = fit_gaussian_tail_to_histogram(
                 filtered_values,
                 tail_side=tail_side,
-                return_full=True
+                return_full=True,
+                verbose = True,
             )
 
             mean, sigma, mean_err, sigma_err, popt, perr, model, fit_bin_centers, fit_hist = result
@@ -334,100 +340,7 @@ def extract_gaussian_trends(
                     "sigma_err": sigma_err,
                 })
     
-    ###-----also plotting stuff here that shouldn't be on regularly
-    #--------------------------------------------------
-    # Make one compiled subplot figure for all windows
-    # --------------------------------------------------
-    if display >0:
-        if len(hist_panels) > 0:
-            n_panels = len(hist_panels)
-            ncols = min(max_cols, n_panels)
-            nrows = math.ceil(n_panels / ncols)
     
-            fig, axs = plt.subplots(
-                nrows,
-                ncols,
-                figsize=(5 * ncols, 4 * nrows),
-                squeeze=False
-            )
-    
-            axs_flat = axs.ravel()
-    
-            for ax, panel in zip(axs_flat, hist_panels):
-                values = panel["values"]
-                lo = panel["lo"]
-                hi = panel["hi"]
-                popt = panel["popt"]
-                model = panel["model"]
-    
-                # Robust histogram range
-                x_low, x_high = np.percentile(values, [0.5, 99.5])
-                pad = 0.05 * (x_high - x_low)
-                x_low -= pad
-                x_high += pad
-    
-                # Bin count using existing FD logic, with fallback
-                bin_width = fd_bin_width(values)
-                if bin_width is None or bin_width <= 0:
-                    nbins = 30
-                else:
-                    nbins = max(10, int(np.ceil((x_high - x_low) / bin_width)))
-    
-                h = Hist(
-                    Regular(
-                        nbins,
-                        x_low,
-                        x_high,
-                        name="lqoe",
-                        #label=f"{lq_filter}/E"
-                    )
-                )
-                h.fill(lqoe=values)
-    
-                hep.histplot(
-                    h,
-                    ax=ax,
-                    histtype="step",
-                    label="Data"
-                )
-    
-                if popt is not None and model is not None:
-                    x_fit = np.linspace(x_low, x_high, 1000)
-                    y_fit = model(x_fit, *popt)
-    
-                    ax.plot(
-                        x_fit,
-                        y_fit,
-                        color="red",
-                        lw=2,
-                        label=(
-                            rf"$\mu={panel['mean']:.3g}\pm{panel['mean_err']:.2g}$"
-                            + "\n"
-                            + rf"$\sigma={panel['sigma']:.3g}\pm{panel['sigma_err']:.2g}$"
-                        )
-                    )
-    
-                ax.set_title(f"{lo:.0f}–{hi:.0f} keV")
-                ax.set_xlabel('LQ/E')#(f"{lq_filter}/E")
-                ax.set_ylabel("Counts")
-                ax.grid(True)
-                ax.legend(fontsize=8)
-    
-            # Turn off unused subplots
-            for ax in axs_flat[len(hist_panels):]:
-                ax.axis("off")
-    
-            #fig.suptitle(f"{det}: {lq_filter}/E fits by energy window", fontsize=14)
-            fig.tight_layout(rect=[0, 0, 1, 0.96])
-    
-            #plot_dir = f"{figure_dir}/lqFit/{det}"
-            #os.makedirs(plot_dir, exist_ok=True)
-            #fig.savefig(f"{plot_dir}/{det}_{lq_filter}_energy_window_fit_histograms.png")
-            #this needs to be updated to like... return the plots somehwere or save them or something
-            plt.show(fig)
-            plt.close(fig)
-    ###----------
-
 
     
     return (
@@ -456,6 +369,8 @@ def fit_mean_model(bin_centers, means, mean_errs):
 
     # Initial guess: slope and intercept
     p0 = [0.0, np.nanmean(y)]
+
+    
 
     try:
         popt, pcov = curve_fit(
@@ -540,234 +455,6 @@ def centers_to_edges(x):
 
     return edges
     
-def plot_mean_vs_energy(
-    bin_centers,
-    means,
-    mean_errs,
-    model,
-    popt,
-    perr,
-    lq_filter,
-    det=None,
-    part=None,
-    period=None
-):
-    plt.figure(figsize=(6, 5))
-
-    if part is not None:
-        var = part
-        var_name = "Partition"
-    else:
-        var = period
-        var_name = "Period"
-
-    # -----------------------------
-    # Clean data
-    # -----------------------------
-    mask = np.isfinite(bin_centers) & np.isfinite(means) & np.isfinite(mean_errs)
-    x = np.asarray(bin_centers[mask], dtype=float)
-    y = np.asarray(means[mask], dtype=float)
-    yerr = np.asarray(mean_errs[mask], dtype=float)
-
-    print("len(x)",len(x),"len(y)",len(y))
-
-    if len(x) == 0:
-        #print(f"No valid data for {det}, {var_name}:{var}")
-        print("No valid data")
-        return
-
-    # -----------------------------
-    # Create hist container
-    # -----------------------------
-    edges = centers_to_edges(x)
-    
-    h = Hist(
-        Variable(edges, name="energy", label="Energy [keV]")
-    )
-    
-    h[...] = y
-
-    # -----------------------------
-    # Plot using mplhep
-    # -----------------------------
-    # hep.histplot(
-    #     h,
-    #     histtype="step",
-    #     color="black",
-    #     label=f"Mean {lq_filter}/E"
-    # )
-
-    # Add error bars manually
-    plt.errorbar(
-        x,
-        y,
-        yerr=yerr,
-        fmt='o',
-        color='black',
-        capsize=2
-    )
-
-    # -----------------------------
-    # Fit overlay
-    # -----------------------------
-    if not np.isnan(popt).any():
-        x_fit = np.linspace(np.min(x), np.max(x), 1000)
-        y_fit = model(x_fit, *popt)
-
-        m_fit, b_fit = popt
-        m_err, b_err = perr
-
-        # Chi-square
-        s_data = np.where(yerr <= 0, 1e-8, yerr)
-        y_model = model(x, *popt)
-        chi2 = np.sum(((y - y_model) / s_data) ** 2)
-        dof = len(x) - len(popt)
-        chi2_red = chi2 / dof if dof > 0 else np.nan
-
-        label = (
-            rf'Fit: $mE + b$'
-            + '\n'
-            + rf'$m = {m_fit:.3g} \pm {m_err:.3g}$, '
-              rf'$b = {b_fit:.3g} \pm {b_err:.3g}$'
-            + '\n'
-            + rf'$\chi^2_{{\mathrm{{red}}}} = {chi2_red:.3f}$'
-        )
-
-        plt.plot(x_fit, y_fit, '-', color='red', label=label)
-        
-
-    # -----------------------------
-    # Formatting
-    # -----------------------------
-    plt.xlabel("Energy [keV]")
-    plt.ylabel(f"Mean ({lq_filter}/E)")
-    #plt.title(f"{det}, {var_name}: {var}")
-    plt.grid()
-    plt.legend()
-    plt.tight_layout()
-
-    # -----------------------------
-    # Save
-    # -----------------------------
-    #plot_dir = f"{figure_dir}/lqFit/{det}"
-    #os.makedirs(plot_dir, exist_ok=True)
-    #plt.savefig(f"{plot_dir}/{det}-{var_name}-{var}_{lq_filter}_means.png")
-    
-    #this needs to be updated to like... return the plots somehwere or save them or something
-    plt.show()
-    plt.close()
-
-def plot_sigma_vs_energy(
-    bin_centers,
-    sigmas,
-    sigma_errs,
-    model,
-    popt,
-    perr,
-    lq_filter,
-    det=None,
-    part=None,
-    period=None
-):
-    plt.figure(figsize=(6, 5))
-
-    if part is not None:
-        var = part
-        var_name = "part"
-    else:
-        var = period
-        var_name = "period"
-
-    # -----------------------------
-    # Clean data
-    # -----------------------------
-    mask = np.isfinite(bin_centers) & np.isfinite(sigmas) & np.isfinite(sigma_errs)
-    x = np.asarray(bin_centers[mask], dtype=float)
-    y = np.asarray(sigmas[mask], dtype=float)
-    yerr = np.asarray(sigma_errs[mask], dtype=float)
-
-    if len(x) == 0:
-        print("No valid data")
-        #print(f"No valid sigma data for {det}, {var_name}:{var}")
-        return
-
-    
-    # -----------------------------
-    # Hist container for trend points
-    # -----------------------------
-    edges = centers_to_edges(x)
-    
-    h = Hist(
-        Variable(edges, name="energy", label="Energy [keV]")
-    )
-    
-    h[...] = y
-
-    # hep.histplot(
-    #     h,
-    #     histtype="step",
-    #     color="black",
-    #     label=f"Sigma {lq_filter}/E"
-    # )
-
-    plt.errorbar(
-        x,
-        y,
-        yerr=yerr,
-        fmt="o",
-        color="black",
-        capsize=2
-    )
-
-    # -----------------------------
-    # Fit overlay
-    # -----------------------------
-    if not np.isnan(popt).any():
-        x_fit = np.linspace(np.min(x), np.max(x), 1000)
-        y_fit = model(x_fit, *popt)
-
-        A_fit, B_fit = popt
-        A_err, B_err = perr
-
-        s_data = np.where(yerr <= 0, 1e-8, yerr)
-
-        y_model = model(x, *popt)
-        residuals = y - y_model
-        chi2 = np.sum((residuals / s_data) ** 2)
-        dof = len(x) - len(popt)
-        chi2_red = chi2 / dof if dof > 0 else np.nan
-
-        label = (
-            rf'Fit: $\sqrt{{\left| \frac{{A}}{{E^2}} + B \right|}}$'
-            + '\n'
-            + rf'$A = {A_fit:.3f} \pm {A_err:.3f}$, '
-              rf'$B = {B_fit:.3f} \pm {B_err:.3f}$'
-            + '\n'
-            + rf'$\chi^2_{{\mathrm{{red}}}} = {chi2_red:.3f}$'
-        )
-
-        plt.plot(
-            x_fit,
-            y_fit,
-            "-",
-            color="red",
-            label=label
-        )
-
-    plt.xlabel("Energy [keV]")
-    plt.ylabel(f"σ ({lq_filter}/E)")
-    #plt.title(f"{det}, {var_name}:{var}")
-    plt.grid()
-    plt.legend()
-    plt.tight_layout()
-
-    #plot_dir = f"{figure_dir}/lqFit/{det}"
-    #os.makedirs(plot_dir, exist_ok=True)
-    #plt.savefig(f"{plot_dir}/{det}-{var_name}-{var}_{lq_filter}_sigmas.png")
-
-    #this needs to be updated to like... return the plots somehwere or save them or something
-    plt.show()
-    plt.close()
 
 ##################################
 
@@ -1209,6 +896,26 @@ class LQCal:
             self.mean_of_means = mean_of_means
 
             self.gauss_trends_hist = hist_pannels
+            self.energy_bin_centers =  bin_centers
+
+            plot_mean_vs_energy_inputs = {
+                "means" : means, 
+                "mean_errs": mean_errs, 
+                "model" : mean_model, 
+                "popt": popt_mean, 
+                "perr": perr_mean, 
+            }
+
+            plot_sigma_vs_energy_inputs = {
+                "sigmas": sigmas, 
+                "sigma_errs" : sigma_errs, 
+                "model": sigma_model, 
+                "popt": popt_sigma, 
+                "perr":  perr_sigma, 
+            }
+            
+            self.energy_means_plot_inputs = plot_mean_vs_energy_inputs
+            self.energy_sigma_plot_inputs = plot_sigma_vs_energy_inputs
             
             
         except Exception as e:
@@ -1747,7 +1454,7 @@ class LQCal:
 
         _n = (lambda base: f"{base}_{suffix}") if suffix else (lambda base: base)
 
-        #lq_over_e_name = _n("LQ_over_E")
+        lq_over_e_name = _n("LQ_over_E")
         timecorr_name = _n("LQ_Timecorr")
         #corrected_name = _n("LQ_Corrected")
         dt_corrected_name = _n("LQ_DT_Corrected")
@@ -1756,13 +1463,13 @@ class LQCal:
         classifier_name = _n("LQ_Classifier")
         cut_name = _n("LQ_Cut")
 
-        #self.get_lq_over_e(df, 
-        #                   initial_lq_param, 
-        #                   cal_energy_param=self.cal_energy_param,
-        #                   out_param= lq_over_e_name)
+        self.get_lq_over_e(df, 
+                           initial_lq_param, 
+                           cal_energy_param=self.cal_energy_param,
+                           out_param= lq_over_e_name)
 
         self.lq_timecorr(df, 
-                         initial_lq_param, #lq_over_e_name
+                         lq_over_e_name,#initial_lq_param, #lq_over_e_name
                          output_name=timecorr_name)
         log.info("Finished LQ Time Correction")
         
@@ -2259,45 +1966,12 @@ def plot_classifier(
     return fig
 
 #------------------------------------------------------------------------------------
-"""
-def plot_energy_means(
-    lq_class,
-    data,
-    lq_param="LQ_Classifier",
-    xrange=(800, 3000),
-    yrange=(-10, 30),
-    xn_bins=700,
-    yn_bins=500,
-    figsize=(12, 8),
-    fontsize=12,
-) -> plt.figure:
-    plt.rcParams["figure.figsize"] = figsize
-    plt.rcParams["font.size"] = fontsize
 
-    fig = plt.figure()
-"""
-"""
-def plot_energy_sigmas(
-    lq_class,
-    data,
-    lq_param="LQ_Classifier",
-    xrange=(800, 3000),
-    yrange=(-10, 30),
-    xn_bins=700,
-    yn_bins=500,
-    figsize=(12, 8),
-    fontsize=12,
-) -> plt.figure:
-    plt.rcParams["figure.figsize"] = figsize
-    plt.rcParams["font.size"] = fontsize
-
-    fig = plt.figure()
-"""
 
 def plot_gaussian_trends_hist(
     lq_class, 
     data, 
-    lq_pramam = "LQ_classifier",
+    lq_param = "LQ_classifier",
     max_cols = 3,
     figsize = (24, 16), 
     fontsize = 12,
@@ -2348,7 +2022,7 @@ def plot_gaussian_trends_hist(
                     x_low,
                     x_high,
                     name="lqoe",
-                    label=f"{lq_pramam}/E"
+                    label=f"{lq_param}/E"
                 )
             )
             h.fill(lqoe=values)
@@ -2377,7 +2051,7 @@ def plot_gaussian_trends_hist(
                 )
     
             ax.set_title(f"{lo:.0f}–{hi:.0f} keV")
-            ax.set_xlabel(f"{lq_pramam}/E")
+            ax.set_xlabel(f"{lq_param}/E")
             ax.set_ylabel("Counts")
             ax.grid(True)
             ax.legend(fontsize=8)
@@ -2398,4 +2072,245 @@ def plot_gaussian_trends_hist(
         plt.close(fig)
         return(fig)
     ###----------
+
+def plot_mean_vs_energy(
+    lq_class, 
+    lq_param = "LQ_classifier",
+):
+
+    bin_centers = lq_class.energy_bin_centers
+    means = lq_class.energy_means_plot_inputs['means']
+    mean_errs = lq_class.energy_means_plot_inputs['mean_errs']
+    model = lq_class.energy_means_plot_inputs['model']
+    popt = lq_class.energy_means_plot_inputs['popt']
+    perr = lq_class.energy_means_plot_inputs['perr']
+
+    det=None,
+    part=None,
+    period=None
+
+    
+    plt.figure(figsize=(6, 5))
+
+    if part is not None:
+        var = part
+        var_name = "Partition"
+    else:
+        var = period
+        var_name = "Period"
+
+    # -----------------------------
+    # Clean data
+    # -----------------------------
+    mask = np.isfinite(bin_centers) & np.isfinite(means) & np.isfinite(mean_errs)
+    x = np.asarray(bin_centers[mask], dtype=float)
+    y = np.asarray(means[mask], dtype=float)
+    yerr = np.asarray(mean_errs[mask], dtype=float)
+
+    print("len(x)",len(x),"len(y)",len(y))
+
+    if len(x) == 0:
+        #print(f"No valid data for {det}, {var_name}:{var}")
+        print("No valid data")
+        return
+
+    # -----------------------------
+    # Create hist container
+    # -----------------------------
+    edges = centers_to_edges(x)
+    
+    h = Hist(
+        Variable(edges, name="energy", label="Energy [keV]")
+    )
+    
+    h[...] = y
+
+    # -----------------------------
+    # Plot using mplhep
+    # -----------------------------
+    # hep.histplot(
+    #     h,
+    #     histtype="step",
+    #     color="black",
+    #     label=f"Mean {lq_filter}/E"
+    # )
+
+    # Add error bars manually
+    plt.errorbar(
+        x,
+        y,
+        yerr=yerr,
+        fmt='o',
+        color='black',
+        capsize=2
+    )
+
+    # -----------------------------
+    # Fit overlay
+    # -----------------------------
+    if not np.isnan(popt).any():
+        x_fit = np.linspace(np.min(x), np.max(x), 1000)
+        y_fit = model(x_fit, *popt)
+
+        m_fit, b_fit = popt
+        m_err, b_err = perr
+
+        # Chi-square
+        s_data = np.where(yerr <= 0, 1e-8, yerr)
+        y_model = model(x, *popt)
+        chi2 = np.sum(((y - y_model) / s_data) ** 2)
+        dof = len(x) - len(popt)
+        chi2_red = chi2 / dof if dof > 0 else np.nan
+
+        label = (
+            rf'Fit: $mE + b$'
+            + '\n'
+            + rf'$m = {m_fit:.3g} \pm {m_err:.3g}$, '
+              rf'$b = {b_fit:.3g} \pm {b_err:.3g}$'
+            + '\n'
+            + rf'$\chi^2_{{\mathrm{{red}}}} = {chi2_red:.3f}$'
+        )
+
+        plt.plot(x_fit, y_fit, '-', color='red', label=label)
+        
+
+    # -----------------------------
+    # Formatting
+    # -----------------------------
+    plt.xlabel("Energy [keV]")
+    plt.ylabel(f"Mean ({lq_param}/E)")
+    #plt.title(f"{det}, {var_name}: {var}")
+    plt.grid()
+    plt.legend()
+    plt.tight_layout()
+
+    # -----------------------------
+    # Save
+    # -----------------------------
+    #plot_dir = f"{figure_dir}/lqFit/{det}"
+    #os.makedirs(plot_dir, exist_ok=True)
+    #plt.savefig(f"{plot_dir}/{det}-{var_name}-{var}_{lq_filter}_means.png")
+    
+    #this needs to be updated to like... return the plots somehwere or save them or something
+    plt.show()
+    plt.close()
+
+def plot_sigma_vs_energy(
+    lq_class, 
+    #data, 
+    lq_param = "LQ_classifier",
+):
+
+
+    bin_centers= lq_class.energy_bin_centers
+    sigmas = lq_class.energy_sigma_plot_inputs['sigmas']
+    sigma_errs = lq_class.energy_sigma_plot_inputs['sigma_errs']
+    model = lq_class.energy_sigma_plot_inputs['model']
+    popt = lq_class.energy_sigma_plot_inputs['popt']
+    perr = lq_class.energy_sigma_plot_inputs['perr']
+    det=None,
+    part=None,
+    period=None
+
+    
+    plt.figure(figsize=(6, 5))
+
+    if part is not None:
+        var = part
+        var_name = "part"
+    else:
+        var = period
+        var_name = "period"
+
+    # -----------------------------
+    # Clean data
+    # -----------------------------
+    mask = np.isfinite(bin_centers) & np.isfinite(sigmas) & np.isfinite(sigma_errs)
+    x = np.asarray(bin_centers[mask], dtype=float)
+    y = np.asarray(sigmas[mask], dtype=float)
+    yerr = np.asarray(sigma_errs[mask], dtype=float)
+
+    if len(x) == 0:
+        print("No valid data")
+        #print(f"No valid sigma data for {det}, {var_name}:{var}")
+        return
+
+    
+    # -----------------------------
+    # Hist container for trend points
+    # -----------------------------
+    edges = centers_to_edges(x)
+    
+    h = Hist(
+        Variable(edges, name="energy", label="Energy [keV]")
+    )
+    
+    h[...] = y
+
+    # hep.histplot(
+    #     h,
+    #     histtype="step",
+    #     color="black",
+    #     label=f"Sigma {lq_filter}/E"
+    # )
+
+    plt.errorbar(
+        x,
+        y,
+        yerr=yerr,
+        fmt="o",
+        color="black",
+        capsize=2
+    )
+
+    # -----------------------------
+    # Fit overlay
+    # -----------------------------
+    if not np.isnan(popt).any():
+        x_fit = np.linspace(np.min(x), np.max(x), 1000)
+        y_fit = model(x_fit, *popt)
+
+        A_fit, B_fit = popt
+        A_err, B_err = perr
+
+        s_data = np.where(yerr <= 0, 1e-8, yerr)
+
+        y_model = model(x, *popt)
+        residuals = y - y_model
+        chi2 = np.sum((residuals / s_data) ** 2)
+        dof = len(x) - len(popt)
+        chi2_red = chi2 / dof if dof > 0 else np.nan
+
+        label = (
+            rf'Fit: $\sqrt{{\left| \frac{{A}}{{E^2}} + B \right|}}$'
+            + '\n'
+            + rf'$A = {A_fit:.3f} \pm {A_err:.3f}$, '
+              rf'$B = {B_fit:.3f} \pm {B_err:.3f}$'
+            + '\n'
+            + rf'$\chi^2_{{\mathrm{{red}}}} = {chi2_red:.3f}$'
+        )
+
+        plt.plot(
+            x_fit,
+            y_fit,
+            "-",
+            color="red",
+            label=label
+        )
+
+    plt.xlabel("Energy [keV]")
+    plt.ylabel(f"σ ({lq_param}/E)")
+    #plt.title(f"{det}, {var_name}:{var}")
+    plt.grid()
+    plt.legend()
+    plt.tight_layout()
+
+    #plot_dir = f"{figure_dir}/lqFit/{det}"
+    #os.makedirs(plot_dir, exist_ok=True)
+    #plt.savefig(f"{plot_dir}/{det}-{var_name}-{var}_{lq_filter}_sigmas.png")
+
+    #this needs to be updated to like... return the plots somehwere or save them or something
+    plt.show()
+    plt.close()
+
     
