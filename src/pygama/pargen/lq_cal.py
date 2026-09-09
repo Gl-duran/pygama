@@ -108,7 +108,7 @@ def detect_tail_side(y_values, verbose=False):
 def fit_gaussian_tail_to_histogram(
     y_values,
     tail_side="auto",
-    return_full=False,
+    return_full=True,
     verbose=False
 ):
     """
@@ -235,23 +235,81 @@ def fit_gaussian_tail_to_histogram(
 
     try:
         popt, pcov,_, mesg, ier = curve_fit(
+        #popt, pcov = curve_fit(
             model,
             bin_centers,
             hist,
             p0=p0,
             bounds=bounds,
-            maxfev=50000
+            maxfev=50000,
+            full_output = True, #this can be turned off when not debugging
+            absolute_sigma = True, #adding this for testing, should be set to false
         )
-##########
-        if ier == 1 or 2 or 3 or 4:
-            continue
-        else: 
-            print(mesg)
-##########
+
         perr = np.sqrt(np.diag(pcov))
 
         A_g_fit, mu_fit, sigma_fit, A_t_fit, tau_fit = popt
         A_g_err, mu_err, sigma_err, A_t_err, tau_err = perr
+
+        ##########
+        if mu_err >1 or sigma_err>0.01:
+            print("message from fit is: ", mesg)
+            print("ier =", ier)
+            print("pcov: ", pcov)
+            print("perr: ", np.sqrt(np.diag(pcov)))
+            print("corr:", pcov / np.outer(np.sqrt(np.diag(pcov)), np.sqrt(np.diag(pcov))))
+
+        """
+        # -------------------------------------------------
+        # Fit diagnostics / degeneracy detection
+        # -------------------------------------------------
+        
+        # Correlation matrix
+        with np.errstate(divide="ignore", invalid="ignore"):
+            corr = pcov / np.outer(perr, perr)
+        
+        # Key correlations:
+        #   0 = A_g
+        #   1 = mu
+        #   2 = sigma
+        #   3 = A_t
+        #   4 = tau
+        
+        # Strong degeneracy between Gaussian and tail amplitudes
+        amp_degeneracy = np.abs(corr[0, 3]) > 0.999
+        
+        # Strong degeneracy between mu and sigma
+        mu_sigma_degeneracy = np.abs(corr[1, 2]) > 0.999
+        
+        # Strong degeneracy involving mu and the component amplitudes
+        mu_amplitude_degeneracy = (
+            np.abs(corr[1, 0]) > 0.999 or
+            np.abs(corr[1, 3]) > 0.999
+        )
+        
+        # Overall degeneracy flag
+        degenerate = (
+            amp_degeneracy or
+            mu_sigma_degeneracy or
+            mu_amplitude_degeneracy
+        )
+        
+        # Check for non-finite covariance
+        covariance_valid = np.all(np.isfinite(pcov)) and np.all(np.isfinite(perr))
+        
+        # Check optimizer convergence
+        converged = ier in {1, 2, 3, 4}
+        
+        fit_quality = {
+            "converged": converged,
+            "covariance_valid": covariance_valid,
+            "degenerate": degenerate,
+            "amp_degeneracy": amp_degeneracy,
+            "mu_sigma_degeneracy": mu_sigma_degeneracy,
+            "mu_amplitude_degeneracy": mu_amplitude_degeneracy,
+        }
+        """
+        ##########
 
         if verbose:
             print(f"Fit tail_side = {tail_side}")
@@ -260,7 +318,8 @@ def fit_gaussian_tail_to_histogram(
             print(f"A_g   = {A_g_fit:.6g} ± {A_g_err:.3g}")
             print(f"A_t   = {A_t_fit:.6g} ± {A_t_err:.3g}")
             print(f"tau   = {tau_fit:.6g} ± {tau_err:.3g}")
-
+            
+        #TO DO: return information about the fit quality
         if return_full:
             return (
                 mu_fit,
@@ -316,7 +375,7 @@ def extract_gaussian_trends(
                 filtered_values,
                 tail_side=tail_side,
                 return_full=True,
-                verbose = True,
+                verbose = False,
             )
 
             mean, sigma, mean_err, sigma_err, popt, perr, model, fit_bin_centers, fit_hist = result
@@ -1179,6 +1238,8 @@ class LQCal:
         """
 
         log.info("Starting LQ drift time correction")
+        log.info("Drift time correction mode: ", mode)
+        self.dt_correction_mode = mode
         if mode == "linear":
             try:
                 try:
@@ -1310,13 +1371,27 @@ class LQCal:
                     
                     y_lr_mcd = slope_lr_mcd * x_vals + intercept_lr_mcd
 
-                    #correction
+                    #correction on DEP
                     corrected_lr_mcd = data_dep[lq_param] - (slope_lr_mcd * data_dep[self.dt_param] + intercept_lr_mcd)
                     corrected_lr_mcd -= np.mean(corrected_lr_mcd)
-    
+
+
+                    #correction on Full 
+                    corrected_lr_mcd_full = final_df[lq_param] - (slope_lr_mcd* final_df[self.dt_param]+intercept_lr_mcd)
+                    corrected_lr_mcd_full -= np.mean(corrected_lr_mcd_full)
+
                     
                     #get the mean of the lq over E dt corrected values
                     lq_dt_cor_mean = np.mean(corrected_lr_mcd)
+                    lq_dt_cor_mean_full = np.mean(corrected_lr_mcd_full)
+
+                    
+                    #apply the correction the the data frame
+                    df[out_param] = df[lq_param] - (slope_lr_mcd* df[self.dt_param]+intercept_lr_mcd) - lq_dt_cor_mean_full
+
+
+
+
                 
                 except Exception as e:
                     msg = "applying LQ drift-time correction (LR-MCD mode) failed"
@@ -1479,6 +1554,7 @@ class LQCal:
             lq_param=timecorr_name,
             cal_energy_param=self.cal_energy_param,
             out_param=dt_corrected_name,
+            mode="LR-MCD" #remmember to turn this off 
         )
         log.info("Finished LQ Drift Time Correction")
 
@@ -1660,7 +1736,11 @@ def plot_lq_mean_time(
 
 
 def plot_drift_time_correction(
-    lq_class, data, lq_param="LQ_Timecorr", figsize=(12, 8), fontsize=12
+    lq_class, 
+    data, 
+    lq_param="LQ_Timecorr", 
+    figsize=(12, 8), 
+    fontsize=12
 ) -> plt.figure:
     """Plots a 2D histogram of LQ versus effective drift time in a 6 keV
     window around the DEP. Additionally plots the fit results for the
