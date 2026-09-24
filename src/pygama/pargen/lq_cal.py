@@ -343,6 +343,237 @@ def fit_gaussian_tail_to_histogram(
 
         return np.nan, np.nan, np.nan, np.nan
 
+def plot_mean_vs_energy_inplace(
+    bin_centers,
+    means,
+    mean_errs,
+    model,
+    popt,
+    perr,
+    lq_filter,
+    det=None,
+    part=None,
+    period=None
+):
+    plt.figure(figsize=(6, 5))
+
+    if part is not None:
+        var = part
+        var_name = "Partition"
+    else:
+        var = period
+        var_name = "Period"
+
+    # -----------------------------
+    # Clean data
+    # -----------------------------
+    #added the bit about mean errors being less than 1. hopefully this helps??
+    mask = np.isfinite(bin_centers) & np.isfinite(means) & np.isfinite(mean_errs) & (mean_errs <=1)
+    x = np.asarray(bin_centers[mask], dtype=float)
+    y = np.asarray(means[mask], dtype=float)
+    yerr = np.asarray(mean_errs[mask], dtype=float)
+
+    print("len(x)",len(x),"len(y)",len(y))
+
+    if len(x) == 0:
+        #print(f"No valid data for {det}, {var_name}:{var}")
+        print("No valid data")
+        return
+
+    # -----------------------------
+    # Create hist container
+    # -----------------------------
+    edges = centers_to_edges(x)
+    
+    h = Hist(
+        Variable(edges, name="energy", label="Energy [keV]")
+    )
+    
+    h[...] = y
+
+    # -----------------------------
+    # Plot using mplhep
+    # -----------------------------
+    # hep.histplot(
+    #     h,
+    #     histtype="step",
+    #     color="black",
+    #     label=f"Mean {lq_filter}/E"
+    # )
+
+    # Add error bars manually
+    plt.errorbar(
+        x,
+        y,
+        yerr=yerr,
+        fmt='o',
+        color='black',
+        capsize=2
+    )
+
+    # -----------------------------
+    # Fit overlay
+    # -----------------------------
+    if not np.isnan(popt).any():
+        x_fit = np.linspace(np.min(x), np.max(x), 1000)
+        y_fit = model(x_fit, *popt)
+
+        m_fit, b_fit = popt
+        m_err, b_err = perr
+
+        # Chi-square
+        s_data = np.where(yerr <= 0, 1e-8, yerr)
+        y_model = model(x, *popt)
+        chi2 = np.sum(((y - y_model) / s_data) ** 2)
+        dof = len(x) - len(popt)
+        chi2_red = chi2 / dof if dof > 0 else np.nan
+
+        label = (
+            rf'Fit: $mE + b$'
+            + '\n'
+            + rf'$m = {m_fit:.3g} \pm {m_err:.3g}$, '
+              rf'$b = {b_fit:.3g} \pm {b_err:.3g}$'
+            + '\n'
+            + rf'$\chi^2_{{\mathrm{{red}}}} = {chi2_red:.3f}$'
+        )
+
+        plt.plot(x_fit, y_fit, '-', color='red', label=label)
+        
+
+    # -----------------------------
+    # Formatting
+    # -----------------------------
+    plt.xlabel("Energy [keV]")
+    plt.ylabel(f"Mean ({lq_filter}/E)")
+    #plt.title(f"{det}, {var_name}: {var}")
+    plt.grid()
+    plt.legend()
+    plt.tight_layout()
+
+    # -----------------------------
+    # Save
+    # -----------------------------
+    #plot_dir = f"{figure_dir}/lqFit/{det}"
+    #os.makedirs(plot_dir, exist_ok=True)
+    #plt.savefig(f"{plot_dir}/{det}-{var_name}-{var}_{lq_filter}_means.png")
+    
+    #this needs to be updated to like... return the plots somehwere or save them or something
+    plt.show()
+    plt.close()
+
+def plot_sigma_vs_energy_inplace(
+    bin_centers,
+    sigmas,
+    sigma_errs,
+    model,
+    popt,
+    perr,
+    lq_filter,
+    det=None,
+    part=None,
+    period=None
+):
+    plt.figure(figsize=(6, 5))
+
+    if part is not None:
+        var = part
+        var_name = "part"
+    else:
+        var = period
+        var_name = "period"
+
+    # -----------------------------
+    # Clean data
+    # -----------------------------
+    mask = np.isfinite(bin_centers) & np.isfinite(sigmas) & np.isfinite(sigma_errs)
+    x = np.asarray(bin_centers[mask], dtype=float)
+    y = np.asarray(sigmas[mask], dtype=float)
+    yerr = np.asarray(sigma_errs[mask], dtype=float)
+
+    if len(x) == 0:
+        print("No valid data")
+        #print(f"No valid sigma data for {det}, {var_name}:{var}")
+        return
+
+    
+    # -----------------------------
+    # Hist container for trend points
+    # -----------------------------
+    edges = centers_to_edges(x)
+    
+    h = Hist(
+        Variable(edges, name="energy", label="Energy [keV]")
+    )
+    
+    h[...] = y
+
+    # hep.histplot(
+    #     h,
+    #     histtype="step",
+    #     color="black",
+    #     label=f"Sigma {lq_filter}/E"
+    # )
+
+    plt.errorbar(
+        x,
+        y,
+        yerr=yerr,
+        fmt="o",
+        color="black",
+        capsize=2
+    )
+
+    # -----------------------------
+    # Fit overlay
+    # -----------------------------
+    if not np.isnan(popt).any():
+        x_fit = np.linspace(np.min(x), np.max(x), 1000)
+        y_fit = model(x_fit, *popt)
+
+        A_fit, B_fit = popt
+        A_err, B_err = perr
+
+        s_data = np.where(yerr <= 0, 1e-8, yerr)
+
+        y_model = model(x, *popt)
+        residuals = y - y_model
+        chi2 = np.sum((residuals / s_data) ** 2)
+        dof = len(x) - len(popt)
+        chi2_red = chi2 / dof if dof > 0 else np.nan
+
+        label = (
+            rf'Fit: $\sqrt{{\left| \frac{{A}}{{E^2}} + B \right|}}$'
+            + '\n'
+            + rf'$A = {A_fit:.3f} \pm {A_err:.3f}$, '
+              rf'$B = {B_fit:.3f} \pm {B_err:.3f}$'
+            + '\n'
+            + rf'$\chi^2_{{\mathrm{{red}}}} = {chi2_red:.3f}$'
+        )
+
+        plt.plot(
+            x_fit,
+            y_fit,
+            "-",
+            color="red",
+            label=label
+        )
+
+    plt.xlabel("Energy [keV]")
+    plt.ylabel(f"σ ({lq_filter}/E)")
+    #plt.title(f"{det}, {var_name}:{var}")
+    plt.grid()
+    plt.legend()
+    plt.tight_layout()
+
+    #plot_dir = f"{figure_dir}/lqFit/{det}"
+    #os.makedirs(plot_dir, exist_ok=True)
+    #plt.savefig(f"{plot_dir}/{det}-{var_name}-{var}_{lq_filter}_sigmas.png")
+
+    #this needs to be updated to like... return the plots somehwere or save them or something
+    plt.show()
+    plt.close()
+
+    
 def extract_gaussian_trends(
     lq_over_e,
     energy,
@@ -418,13 +649,30 @@ def fit_mean_model(bin_centers, means, mean_errs):
         return m * E + b
 
     # Clean input data
-    mask = ~np.isnan(bin_centers) & ~np.isnan(means) & ~np.isnan(mean_errs)
+    #again added the mean errers being less than 1 bit....
+    mask = ~np.isnan(bin_centers) & ~np.isnan(means) & ~np.isnan(mean_errs) #& (mean_errs <=1)
     x = np.asarray(bin_centers[mask], dtype=float)
     y = np.asarray(means[mask], dtype=float)
     s = np.asarray(mean_errs[mask], dtype=float)
 
+
+
     # Avoid zero / negative uncertainties
-    s = np.where(s <= 0, 1e-8, s)
+    #s = np.where(s <= 0, 1e-8, s)
+
+    #to avoid zero and negative uncertainties, but without making them to small
+    valid_s = s[np.isfinite(s) & (s > 0)]
+    s_median = np.median(s)
+    if len(valid_s) == 0:
+        # No usable uncertainties
+        s = np.ones_like(y)
+        absolute_sigma = False
+    else:
+        s_median = np.median(valid_s)
+        s = np.where(np.isfinite(s) & (s > 0), s, s_median)
+        absolute_sigma = True
+
+    
 
     # Initial guess: slope and intercept
     p0 = [0.0, np.nanmean(y)]
@@ -437,8 +685,9 @@ def fit_mean_model(bin_centers, means, mean_errs):
             x,
             y,
             p0=p0,
+            #this is a test to turn if off. remember to turn it back on or figure something out
             sigma=s,
-            absolute_sigma=True,
+            absolute_sigma= True, #can use absolute_sigma variable here i guess if we want
             maxfev=10000
         )
         return popt, np.sqrt(np.diag(pcov)), model
@@ -475,7 +724,8 @@ def fit_sigma_model(bin_centers, sigmas, sigma_errs):
             p0=initial_guess, 
             sigma=s, 
             maxfev=10000,
-            absolute_sigma=True # Optional: use if errors are absolute standard devs
+            absolute_sigma=True, # Optional: use if errors are absolute standard devs
+            bounds = ([-np.inf, 0],[np.inf, np.inf])
         )
         return popt, np.sqrt(np.diag(pcov)), model
     except Exception as e:
@@ -900,7 +1150,7 @@ class LQCal:
         
         try:
             # 
-            lq_over_e = df[lq_param].to_numpy()/df[cal_energy_param].to_numpy()
+            #lq_over_e = df[lq_param].to_numpy()/df[cal_energy_param].to_numpy()
             
             bin_centers, means, mean_errs, sigmas, sigma_errs, hist_pannels = extract_gaussian_trends(df[lq_param].to_numpy(),
                                                                                         df[cal_energy_param].to_numpy(),
@@ -920,9 +1170,16 @@ class LQCal:
             mean_of_means= float(np.mean(means))
 
             #these should be turned off regularly. im just putting it here for now
+            #I was investigating if plotting problems was from how i was saving parameters. 
+            #that doesnt seem to be the case
             ###-----------------------
+            """
             if display > 0:
-                plot_mean_vs_energy(bin_centers = bin_centers, 
+                #plt.scatter(bin_centers, mean_errs)
+                #plt.show()
+
+                
+                plot_mean_vs_energy_inplace(bin_centers = bin_centers, 
                                     means = means, 
                                     mean_errs = mean_errs, 
                                     model = mean_model, 
@@ -935,7 +1192,7 @@ class LQCal:
                                    )
     
     
-                plot_sigma_vs_energy(bin_centers = bin_centers, 
+                plot_sigma_vs_energy_inplace(bin_centers = bin_centers, 
                                      sigmas = sigmas, 
                                      sigma_errs = sigma_errs, 
                                      model = sigma_model, 
@@ -946,6 +1203,7 @@ class LQCal:
                                      #part = part, 
                                      #period = period
                                     )
+                """
                 ###------------------------
             
 
@@ -1239,7 +1497,33 @@ class LQCal:
 
         log.info("Starting LQ drift time correction")
         log.info("Drift time correction mode: ", mode)
+        
+
+        #perform a check on the range of values seen in the DEP and use that to maybe edit the mode.
+        try:
+            dep_events = df.query(f"{self.cal_energy_param} > 1589.5 & {self.cal_energy_param} < 1595.5 & {self.cal_energy_param}=={self.cal_energy_param}&{lq_param}=={lq_param}")
+            
+            dt_range = [np.nanpercentile(dep_events[self.dt_param], 10),
+                        np.nanpercentile(dep_events[self.dt_param], 95),
+                       ]
+            dt_range[1]-dt_range[0]
+
+            if (dt_range[1]-dt_range[0]) > 200:
+                mode = "LR-MCD"
+            elif (dt_range[1]-dt_range[0]) <=200:
+                mode = "linear"
+            
+            log.info("Drift time correction mode after range checks: ", mode)
+        
+        except Exception as e:
+            msg = "DEP event selection for mode determination failed"
+            raise RuntimeError(msg) from e
+        
         self.dt_correction_mode = mode
+        #remember to turn this off
+        print("dt mode is: ", mode)
+        print("dt range is: ", dt_range[1]-dt_range[0])
+        
         if mode == "linear":
             try:
                 try:
@@ -1564,7 +1848,7 @@ class LQCal:
                                      cal_energy_param=self.cal_energy_param, 
                                      out_param = corrected_name,
         ##################this is on for testing i need to make sure to turn it off again for real                             
-                                     display = 0,
+                                     display = 1,
                                     )
         log.info("Finished LQ E width Correction")
 
@@ -2170,7 +2454,7 @@ def plot_mean_vs_energy(
     period=None
 
     
-    plt.figure(figsize=(6, 5))
+    fig = plt.figure(figsize=(6, 5))
 
     if part is not None:
         var = part
@@ -2272,8 +2556,11 @@ def plot_mean_vs_energy(
     #plt.savefig(f"{plot_dir}/{det}-{var_name}-{var}_{lq_filter}_means.png")
     
     #this needs to be updated to like... return the plots somehwere or save them or something
-    plt.show()
+    #plt.show()
+    #plt.close()
+
     plt.close()
+    return(fig)
 
 def plot_sigma_vs_energy(
     lq_class, 
@@ -2293,7 +2580,7 @@ def plot_sigma_vs_energy(
     period=None
 
     
-    plt.figure(figsize=(6, 5))
+    fig = plt.figure(figsize=(6, 5))
 
     if part is not None:
         var = part
@@ -2390,7 +2677,9 @@ def plot_sigma_vs_energy(
     #plt.savefig(f"{plot_dir}/{det}-{var_name}-{var}_{lq_filter}_sigmas.png")
 
     #this needs to be updated to like... return the plots somehwere or save them or something
-    plt.show()
+    #plt.show()
+    #plt.close()
+    
     plt.close()
-
+    return(fig)
     
