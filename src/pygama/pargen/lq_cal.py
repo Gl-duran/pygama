@@ -595,8 +595,18 @@ def extract_gaussian_trends(
         values = np.asarray(lq_over_e[idx], dtype=float)
         values = values[np.isfinite(values)]
 
+        #this determins what values we are fitting
         if len(values) > 10:
-            fit_min, fit_max = get_fit_range(values)
+            #adding in a try/except statement bc we were getting an error sometimes 
+            try:
+                fit_min, fit_max = get_fit_range(values)
+            #except:
+            except Exception as e:
+                print(f"An error occured! : {e}")
+                mu_except = np.median(values)
+                sigma_except = np.std(values) if np.std(values) > 0 else 1.0
+                fit_min, fit_max = mu_except - 2.5 * sigma_except, mu_except + 2.5 * sigma_except
+                
             filtered_values = values[(values >= fit_min) & (values <= fit_max)]
 
             if len(filtered_values) <= 10:
@@ -629,7 +639,102 @@ def extract_gaussian_trends(
                     "mean_err": mean_err,
                     "sigma_err": sigma_err,
                 })
+            
+
+    ###-----also plotting stuff here that shouldn't be on regularly
+    #--------------------------------------------------
+    # Make one compiled subplot figure for all windows
+    # --------------------------------------------------
+    if display >0:
+        if len(hist_panels) > 0:
+            n_panels = len(hist_panels)
+            ncols = min(max_cols, n_panels)
+            nrows = math.ceil(n_panels / ncols)
     
+            fig, axs = plt.subplots(
+                nrows,
+                ncols,
+                figsize=(5 * ncols, 4 * nrows),
+                squeeze=False
+            )
+    
+            axs_flat = axs.ravel()
+    
+            for ax, panel in zip(axs_flat, hist_panels):
+                values = panel["values"]
+                lo = panel["lo"]
+                hi = panel["hi"]
+                popt = panel["popt"]
+                model = panel["model"]
+    
+                # Robust histogram range
+                x_low, x_high = np.percentile(values, [0.5, 99.5])
+                pad = 0.05 * (x_high - x_low)
+                x_low -= pad
+                x_high += pad
+    
+                # Bin count using existing FD logic, with fallback
+                bin_width = fd_bin_width(values)
+                if bin_width is None or bin_width <= 0:
+                    nbins = 30
+                else:
+                    nbins = max(10, int(np.ceil((x_high - x_low) / bin_width)))
+    
+                h = Hist(
+                    Regular(
+                        nbins,
+                        x_low,
+                        x_high,
+                        name="lqoe",
+                        #label=f"{lq_filter}/E"
+                    )
+                )
+                h.fill(lqoe=values)
+
+                hep.histplot(
+                    h,
+                    ax=ax,
+                    histtype="step",
+                    label="Data"
+                )
+    
+                if popt is not None and model is not None:
+                    x_fit = np.linspace(x_low, x_high, 1000)
+                    y_fit = model(x_fit, *popt)
+    
+                    ax.plot(
+                        x_fit,
+                        y_fit,
+                        color="red",
+                        lw=2,
+                        label=(
+                            rf"$\mu={panel['mean']:.3g}\pm{panel['mean_err']:.2g}$"
+                            + "\n"
+                            + rf"$\sigma={panel['sigma']:.3g}\pm{panel['sigma_err']:.2g}$"
+                        )
+                    )
+    
+                ax.set_title(f"{lo:.0f}–{hi:.0f} keV")
+                ax.set_xlabel('LQ/E')#(f"{lq_filter}/E")
+                ax.set_ylabel("Counts")
+                ax.grid(True)
+                ax.legend(fontsize=8)
+    
+            # Turn off unused subplots
+            for ax in axs_flat[len(hist_panels):]:
+                ax.axis("off")
+    
+            #fig.suptitle(f"{det}: {lq_filter}/E fits by energy window", fontsize=14)
+            fig.tight_layout(rect=[0, 0, 1, 0.96])
+    
+            #plot_dir = f"{figure_dir}/lqFit/{det}"
+            #os.makedirs(plot_dir, exist_ok=True)
+            #fig.savefig(f"{plot_dir}/{det}_{lq_filter}_energy_window_fit_histograms.png")
+            #this needs to be updated to like... return the plots somehwere or save them or something
+            plt.show(fig)
+            plt.close(fig)
+    ###----------
+        
     
 
     
